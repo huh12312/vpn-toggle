@@ -18,8 +18,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "nsis": {
-      "installMode": "currentUser",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      },
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
       }
