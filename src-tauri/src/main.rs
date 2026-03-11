@@ -11,6 +11,42 @@ use tauri_plugin_store::StoreExt;
 use std::sync::Mutex;
 use std::time::Duration;
 
+// ── Startup logging ──────────────────────────────────────────────────────────
+
+fn log_path() -> Option<std::path::PathBuf> {
+    std::env::var("APPDATA").ok().map(|appdata| {
+        std::path::PathBuf::from(appdata)
+            .join("VPN Toggle")
+            .join("app.log")
+    })
+}
+
+fn write_log(msg: &str) {
+    use std::io::Write;
+    if let Some(path) = log_path() {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let _ = writeln!(file, "[{}] {}", ts, msg);
+        }
+    }
+}
+
+fn setup_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        write_log(&format!("[PANIC] {}", info));
+    }));
+}
+
 const STORE_KEY: &str = "settings";
 const REQUEST_TIMEOUT_SECS: u64 = 10;
 
@@ -316,9 +352,13 @@ async fn get_all_vpn_status(state: State<'_, AppState>) -> Result<Vec<VpnStatus>
 }
 
 fn main() {
+    setup_panic_hook();
+    write_log("Application starting");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
+            write_log("Setup: loading settings");
             let settings = load_settings_from_store(app.handle());
             app.manage(AppState {
                 settings: Mutex::new(settings),
@@ -329,6 +369,7 @@ fn main() {
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
 
+            write_log("Setup: building tray icon");
             let _tray = TrayIconBuilder::new()
                 .icon(tauri::include_image!("icons/32x32.png"))
                 .menu(&menu)
@@ -369,6 +410,7 @@ fn main() {
                 });
             }
 
+            write_log("Setup: complete");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -378,5 +420,7 @@ fn main() {
             get_all_vpn_status
         ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .unwrap_or_else(|e| {
+            write_log(&format!("[FATAL] Tauri runtime error: {}", e));
+        });
 }

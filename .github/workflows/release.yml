@@ -33,6 +33,24 @@ jobs:
         with:
           workspaces: './src-tauri -> target'
 
+      - name: Set version from tag
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          Write-Host "Setting version to $version"
+
+          # Update tauri.conf.json
+          $conf = Get-Content -Path "src-tauri/tauri.conf.json" -Raw
+          $conf = $conf -replace '"version":\s*"[^"]*"', "`"version`": `"$version`""
+          Set-Content -Path "src-tauri/tauri.conf.json" -Value $conf
+
+          # Update Cargo.toml
+          $cargo = Get-Content -Path "src-tauri/Cargo.toml" -Raw
+          $cargo = $cargo -replace '^version = "[^"]*"', "version = `"$version`""
+          Set-Content -Path "src-tauri/Cargo.toml" -Value $cargo
+
+          Write-Host "Done — tauri.conf.json and Cargo.toml updated to $version"
+
       - name: Install frontend dependencies
         run: npm ci
 
