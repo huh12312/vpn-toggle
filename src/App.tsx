@@ -5,7 +5,8 @@ import Settings from "./components/Settings";
 
 export interface VpnGateway {
   display_name: string;
-  gateway_name: string;
+  gateway_name: string; // OPNsense gateway name for status (e.g. WAN_VPN)
+  alias_name: string;   // Firewall alias name for toggle (e.g. vpn_devices)
 }
 
 export interface AppSettings {

@@ -20,7 +20,7 @@ function Settings({ settings, onSave, onCancel }: SettingsProps) {
       ...formData,
       gateways: [
         ...formData.gateways,
-        { display_name: "", gateway_name: "" },
+        { display_name: "", gateway_name: "", alias_name: "" },
       ],
     });
   };
@@ -153,7 +153,7 @@ function Settings({ settings, onSave, onCancel }: SettingsProps) {
 
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Gateway Name (Alias)
+                      Gateway Name
                     </label>
                     <input
                       type="text"
@@ -162,7 +162,22 @@ function Settings({ settings, onSave, onCancel }: SettingsProps) {
                         updateGateway(index, "gateway_name", e.target.value)
                       }
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      placeholder="e.g., vpn_us_east"
+                      placeholder="OPNsense gateway name (e.g. WAN_VPN)"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Alias Name
+                    </label>
+                    <input
+                      type="text"
+                      value={gateway.alias_name}
+                      onChange={(e) =>
+                        updateGateway(index, "alias_name", e.target.value)
+                      }
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="Firewall alias name (e.g. vpn_devices)"
                     />
                   </div>
                 </div>

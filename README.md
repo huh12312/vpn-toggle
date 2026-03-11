@@ -51,16 +51,23 @@ The built executable will be in `src-tauri/target/release/`.
 2. Enter your OPNsense base URL (e.g., `https://10.0.0.1:444`)
 3. Enter your API Key and API Secret
 4. Add VPN gateways with:
-   - Display Name: Human-readable name
-   - Gateway Name: The alias name in OPNsense (must match exactly)
+   - **Display Name**: Human-readable label shown in the UI
+   - **Gateway Name**: The OPNsense gateway name used for status checks (e.g. `WAN_VPN`)
+   - **Alias Name**: The firewall alias used to route this device through VPN (e.g. `vpn_devices`)
 
 ## How It Works
 
-The app toggles VPN gateways by adding/removing the device's local IPv4 address to firewall aliases:
-- VPN is "enabled" when the alias contains the device's local IP
-- Toggle ON: adds the device's local IPv4 to the alias
-- Toggle OFF: removes the device's local IPv4 from the alias
-- After each toggle, the firewall is reconfigured to apply changes
+The app has two separate concerns:
+
+**Gateway Status** (green/yellow/red indicator):
+- Checks the actual OPNsense gateway status via `/api/routes/gateway/status`
+- Green = gateway online, Yellow = gateway down, Red = error
+
+**VPN Toggle** (on/off switch):
+- Adds or removes the device's local IPv4 address from a firewall alias
+- Toggle ON: adds this device's IP to the alias → traffic routes through VPN
+- Toggle OFF: removes this device's IP from the alias → traffic routes normally
+- The toggle is disabled when the gateway is offline
 - The local IP is detected automatically at runtime
 
 ## Tech Stack

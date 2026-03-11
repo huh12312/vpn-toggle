@@ -4,8 +4,10 @@ import { AppSettings } from "../App";
 
 interface VpnStatus {
   gateway_name: string;
+  alias_name: string;
   display_name: string;
-  enabled: boolean;
+  enabled: boolean; // device IP is in the alias
+  online: boolean;  // OPNsense gateway is up
   error?: string;
 }
 
@@ -40,11 +42,11 @@ function VpnList({ settings }: VpnListProps) {
     }
   };
 
-  const handleToggle = async (gatewayName: string, currentState: boolean) => {
-    setToggling(gatewayName);
+  const handleToggle = async (aliasName: string, currentState: boolean) => {
+    setToggling(aliasName);
     try {
       await invoke("toggle_vpn", {
-        gatewayName: gatewayName,
+        aliasName: aliasName,
         enable: !currentState,
       });
       // Refresh status after toggle
@@ -55,6 +57,18 @@ function VpnList({ settings }: VpnListProps) {
     } finally {
       setToggling(null);
     }
+  };
+
+  const getStatusLabel = (vpn: VpnStatus) => {
+    if (vpn.error) return "Error";
+    if (!vpn.online) return "Gateway Down";
+    return vpn.enabled ? "Active" : "Inactive";
+  };
+
+  const getStatusColor = (vpn: VpnStatus) => {
+    if (vpn.error) return "bg-red-500";
+    if (!vpn.online) return "bg-yellow-500";
+    return vpn.enabled ? "bg-green-500" : "bg-gray-400";
   };
 
   if (!settings.api_key || !settings.api_secret) {
@@ -95,12 +109,14 @@ function VpnList({ settings }: VpnListProps) {
       <div className="space-y-3">
         {vpnStatuses.map((vpn) => (
           <div
-            key={vpn.gateway_name}
+            key={vpn.alias_name}
             className="bg-white rounded-lg shadow p-4 flex items-center justify-between"
           >
             <div className="flex-1">
               <h3 className="font-semibold text-gray-800">{vpn.display_name}</h3>
-              <p className="text-sm text-gray-500">{vpn.gateway_name}</p>
+              <p className="text-xs text-gray-400">
+                Gateway: {vpn.gateway_name} · Alias: {vpn.alias_name}
+              </p>
               {vpn.error && (
                 <p className="text-sm text-red-500 mt-1">Error: {vpn.error}</p>
               )}
@@ -108,27 +124,13 @@ function VpnList({ settings }: VpnListProps) {
 
             <div className="flex items-center space-x-3">
               <div className="flex items-center">
-                <div
-                  className={`w-3 h-3 rounded-full mr-2 ${
-                    vpn.error
-                      ? "bg-red-500"
-                      : vpn.enabled
-                      ? "bg-green-500"
-                      : "bg-gray-400"
-                  }`}
-                />
-                <span className="text-sm text-gray-600">
-                  {vpn.error
-                    ? "Error"
-                    : vpn.enabled
-                    ? "Connected"
-                    : "Disconnected"}
-                </span>
+                <div className={`w-3 h-3 rounded-full mr-2 ${getStatusColor(vpn)}`} />
+                <span className="text-sm text-gray-600">{getStatusLabel(vpn)}</span>
               </div>
 
               <button
-                onClick={() => handleToggle(vpn.gateway_name, vpn.enabled)}
-                disabled={toggling === vpn.gateway_name || !!vpn.error}
+                onClick={() => handleToggle(vpn.alias_name, vpn.enabled)}
+                disabled={toggling === vpn.alias_name || !!vpn.error || !vpn.online}
                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed ${
                   vpn.enabled ? "bg-blue-600" : "bg-gray-300"
                 }`}
