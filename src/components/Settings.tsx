@@ -7,11 +7,36 @@ interface SettingsProps {
   onCancel: () => void;
 }
 
+function validateSettings(data: AppSettings): string | null {
+  if (!data.base_url.trim()) return "Base URL is required.";
+  if (!/^https?:\/\/.+/.test(data.base_url.trim())) return "Base URL must start with http:// or https://";
+  if (!data.api_key.trim()) return "API Key is required.";
+  if (!data.api_secret.trim()) return "API Secret is required.";
+  for (let i = 0; i < data.gateways.length; i++) {
+    const g = data.gateways[i];
+    if (!g.display_name.trim()) return `Gateway ${i + 1}: Display Name is required.`;
+    if (!g.gateway_name.trim()) return `Gateway ${i + 1}: Gateway Name is required.`;
+    if (!g.alias_name.trim()) return `Gateway ${i + 1}: Alias Name is required.`;
+  }
+  // Check for duplicate alias names
+  const aliasNames = data.gateways.map((g) => g.alias_name.trim());
+  const unique = new Set(aliasNames);
+  if (unique.size !== aliasNames.length) return "Duplicate Alias Names detected — each gateway must have a unique alias.";
+  return null;
+}
+
 function Settings({ settings, onSave, onCancel }: SettingsProps) {
   const [formData, setFormData] = useState<AppSettings>(settings);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const err = validateSettings(formData);
+    if (err) {
+      setValidationError(err);
+      return;
+    }
+    setValidationError(null);
     onSave(formData);
   };
 
@@ -26,6 +51,8 @@ function Settings({ settings, onSave, onCancel }: SettingsProps) {
   };
 
   const removeGateway = (index: number) => {
+    const name = formData.gateways[index].display_name || `Gateway ${index + 1}`;
+    if (!window.confirm(`Remove "${name}"? This cannot be undone.`)) return;
     setFormData({
       ...formData,
       gateways: formData.gateways.filter((_, i) => i !== index),
@@ -46,6 +73,12 @@ function Settings({ settings, onSave, onCancel }: SettingsProps) {
     <div className="p-6 max-w-3xl mx-auto">
       <h2 className="text-2xl font-bold mb-6 text-gray-800">Settings</h2>
 
+      {validationError && (
+        <div className="mb-4 bg-red-50 border border-red-300 text-red-700 rounded p-3 text-sm">
+          {validationError}
+        </div>
+      )}
+
       <form onSubmit={handleSubmit} className="space-y-6">
         <div className="bg-white rounded-lg shadow p-6 space-y-4">
           <h3 className="text-lg font-semibold text-gray-700 mb-4">
@@ -54,7 +87,7 @@ function Settings({ settings, onSave, onCancel }: SettingsProps) {
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Base URL
+              Base URL <span className="text-red-500">*</span>
             </label>
             <input
               type="text"
@@ -69,7 +102,7 @@ function Settings({ settings, onSave, onCancel }: SettingsProps) {
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              API Key
+              API Key <span className="text-red-500">*</span>
             </label>
             <input
               type="text"
@@ -84,7 +117,7 @@ function Settings({ settings, onSave, onCancel }: SettingsProps) {
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              API Secret
+              API Secret <span className="text-red-500">*</span>
             </label>
             <input
               type="password"
@@ -118,70 +151,75 @@ function Settings({ settings, onSave, onCancel }: SettingsProps) {
             </p>
           ) : (
             <div className="space-y-4">
-              {formData.gateways.map((gateway, index) => (
-                <div
-                  key={index}
-                  className="border border-gray-200 rounded-md p-4 space-y-3"
-                >
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-sm font-medium text-gray-600">
-                      Gateway {index + 1}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => removeGateway(index)}
-                      className="text-red-500 hover:text-red-700 text-sm"
-                    >
-                      Remove
-                    </button>
-                  </div>
+              {formData.gateways.map((gateway, index) => {
+                const stableKey = `gateway-${index}-${gateway.gateway_name || index}`;
+                return (
+                  <div
+                    key={stableKey}
+                    className="border border-gray-200 rounded-md p-4 space-y-3"
+                  >
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-sm font-medium text-gray-600">
+                        Gateway {index + 1}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => removeGateway(index)}
+                        className="text-red-500 hover:text-red-700 text-sm"
+                      >
+                        Remove
+                      </button>
+                    </div>
 
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Display Name
-                    </label>
-                    <input
-                      type="text"
-                      value={gateway.display_name}
-                      onChange={(e) =>
-                        updateGateway(index, "display_name", e.target.value)
-                      }
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      placeholder="e.g., US East VPN"
-                    />
-                  </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Display Name <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={gateway.display_name}
+                        onChange={(e) =>
+                          updateGateway(index, "display_name", e.target.value)
+                        }
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="e.g., US East VPN"
+                      />
+                    </div>
 
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Gateway Name
-                    </label>
-                    <input
-                      type="text"
-                      value={gateway.gateway_name}
-                      onChange={(e) =>
-                        updateGateway(index, "gateway_name", e.target.value)
-                      }
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      placeholder="OPNsense gateway name (e.g. WAN_VPN)"
-                    />
-                  </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Gateway Name <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={gateway.gateway_name}
+                        onChange={(e) =>
+                          updateGateway(index, "gateway_name", e.target.value)
+                        }
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="OPNsense gateway name (e.g. WAN_VPN)"
+                      />
+                      <p className="text-xs text-gray-400 mt-1">Used to check if the gateway is online</p>
+                    </div>
 
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Alias Name
-                    </label>
-                    <input
-                      type="text"
-                      value={gateway.alias_name}
-                      onChange={(e) =>
-                        updateGateway(index, "alias_name", e.target.value)
-                      }
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      placeholder="Firewall alias name (e.g. vpn_devices)"
-                    />
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Alias Name <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={gateway.alias_name}
+                        onChange={(e) =>
+                          updateGateway(index, "alias_name", e.target.value)
+                        }
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="Firewall alias name (e.g. vpn_devices)"
+                      />
+                      <p className="text-xs text-gray-400 mt-1">Used to add/remove this device's IP for VPN routing</p>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
