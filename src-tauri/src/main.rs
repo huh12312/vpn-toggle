@@ -278,7 +278,11 @@ fn main() {
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
 
+            let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))
+                .map_err(|e| format!("Failed to load tray icon: {}", e))?;
+
             let _tray = TrayIconBuilder::new()
+                .icon(icon)
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "show" => {
