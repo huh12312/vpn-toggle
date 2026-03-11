@@ -2,12 +2,19 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use base64::{Engine as _, engine::general_purpose};
+use local_ip_address::local_ip;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri_plugin_store::StoreExt;
 use std::sync::Mutex;
+
+fn get_local_ip() -> Result<String, String> {
+    local_ip()
+        .map(|ip| ip.to_string())
+        .map_err(|e| format!("Failed to detect local IP: {}", e))
+}
 
 const STORE_KEY: &str = "settings";
 
@@ -117,7 +124,8 @@ async fn fetch_vpn_enabled(
         return Err(format!("API error ({}): {}", status, text));
     }
 
-    Ok(text.contains("0.0.0.0/0"))
+    let local_ip = get_local_ip()?;
+    Ok(text.contains(&local_ip))
 }
 
 #[tauri::command]
@@ -148,11 +156,12 @@ async fn toggle_vpn(
 
     let auth = general_purpose::STANDARD.encode(format!("{}:{}", settings.api_key, settings.api_secret));
 
+    let local_ip = get_local_ip()?;
     let endpoint = if enable { "addAliasAddress" } else { "delAliasAddress" };
     let url = format!("{}/api/firewall/alias/{}/{}", settings.base_url, endpoint, gateway_name);
 
     let mut body = std::collections::HashMap::new();
-    body.insert("address", "0.0.0.0/0");
+    body.insert("address", local_ip.as_str());
 
     let response = client
         .post(&url)

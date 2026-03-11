@@ -56,11 +56,12 @@ The built executable will be in `src-tauri/target/release/`.
 
 ## How It Works
 
-The app toggles VPN gateways by adding/removing `0.0.0.0/0` to firewall aliases:
-- VPN is "enabled" when the alias contains `0.0.0.0/0`
-- Toggle ON: adds `0.0.0.0/0` to the alias
-- Toggle OFF: removes `0.0.0.0/0` from the alias
+The app toggles VPN gateways by adding/removing the device's local IPv4 address to firewall aliases:
+- VPN is "enabled" when the alias contains the device's local IP
+- Toggle ON: adds the device's local IPv4 to the alias
+- Toggle OFF: removes the device's local IPv4 from the alias
 - After each toggle, the firewall is reconfigured to apply changes
+- The local IP is detected automatically at runtime
 
 ## Tech Stack
 

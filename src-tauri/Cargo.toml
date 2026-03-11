@@ -16,6 +16,7 @@ serde_json = "1"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 tokio = { version = "1", features = ["full"] }
 base64 = "0.22"
+local-ip-address = "0.6"
 
 [features]
 default = ["custom-protocol"]
