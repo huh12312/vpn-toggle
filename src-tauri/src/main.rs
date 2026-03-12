@@ -243,11 +243,22 @@ async fn fetch_gateway_online(
     if let Some(items) = json.get("items").and_then(|v| v.as_array()) {
         for item in items {
             if item.get("name").and_then(|v| v.as_str()) == Some(gateway_name) {
-                let gw_status = item.get("status").and_then(|v| v.as_str()).unwrap_or("");
-                return Ok(gw_status == "online");
+                // OPNsense reports a healthy gateway as status="none" (no issues).
+                // Other values: "loss", "delay", "down", "force_down".
+                // We treat anything that isn't explicitly down as online.
+                let gw_status = item.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let is_online = !matches!(gw_status, "down" | "force_down");
+                write_log(&format!("Gateway '{}' status='{}' online={}", gateway_name, gw_status, is_online));
+                return Ok(is_online);
             }
         }
-        return Err(format!("Gateway '{}' not found in OPNsense", gateway_name));
+        // Log available gateway names to help with misconfiguration
+        let names: Vec<&str> = items.iter()
+            .filter_map(|i| i.get("name").and_then(|v| v.as_str()))
+            .collect();
+        let msg = format!("Gateway '{}' not found. Available: [{}]", gateway_name, names.join(", "));
+        write_log(&msg);
+        return Err(msg);
     }
 
     Err("Unexpected gateway status response format".to_string())
