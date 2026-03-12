@@ -334,6 +334,7 @@ async fn toggle_vpn(
     let reconfigure_response = state.client
         .post(&reconfigure_url)
         .header("Authorization", auth_header(&settings))
+        .header("Content-Length", "0")
         .body("")
         .send()
         .await
