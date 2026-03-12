@@ -4,9 +4,15 @@
 use base64::{Engine as _, engine::general_purpose};
 use local_ip_address::local_ip;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{AppHandle, Manager, State};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
+use tauri_plugin_store::StoreExt;
+
+// ── Tray icons (embedded at compile time) ────────────────────────────────────
 
 const TRAY_ICON_ON:  &[u8] = include_bytes!("../icons/tray-on-32.png");
 const TRAY_ICON_OFF: &[u8] = include_bytes!("../icons/tray-off-32.png");
@@ -20,9 +26,6 @@ fn update_tray_icon(app: &AppHandle, any_enabled: bool) {
         let _ = tray.0.set_icon(Some(icon));
     }
 }
-use tauri_plugin_store::StoreExt;
-use std::sync::Mutex;
-use std::time::Duration;
 
 // ── Startup logging ──────────────────────────────────────────────────────────
 
@@ -60,18 +63,12 @@ fn setup_panic_hook() {
     }));
 }
 
+// ── Constants ────────────────────────────────────────────────────────────────
+
 const STORE_KEY: &str = "settings";
 const REQUEST_TIMEOUT_SECS: u64 = 10;
 
-fn get_local_ip() -> Result<String, String> {
-    local_ip()
-        .map(|ip| ip.to_string())
-        .map_err(|e| format!("Failed to detect local IP: {}", e))
-}
-
-fn normalize_url(url: &str) -> String {
-    url.trim_end_matches('/').to_string()
-}
+// ── Data types ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct VpnGateway {
@@ -114,12 +111,18 @@ struct VpnStatus {
     error: Option<String>,
 }
 
+// ── App state ────────────────────────────────────────────────────────────────
+
 struct AppState {
     settings: Mutex<Settings>,
-    client: reqwest::Client, // shared, connection-pooled
+    client: reqwest::Client,
+    /// Last known enabled state per alias — used for accurate aggregate tray icon
+    /// when a single gateway is toggled.
+    alias_states: Mutex<HashMap<String, bool>>,
 }
 
 fn make_client() -> reqwest::Client {
+    // danger_accept_invalid_certs: OPNsense commonly uses self-signed TLS certs.
     reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
@@ -127,7 +130,9 @@ fn make_client() -> reqwest::Client {
         .expect("Failed to build HTTP client")
 }
 
-/// Lock the settings mutex, recovering from poisoning
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Lock the settings mutex, recovering from poisoning.
 fn lock_settings(state: &State<'_, AppState>) -> Settings {
     state.settings
         .lock()
@@ -142,18 +147,29 @@ fn auth_header(settings: &Settings) -> String {
     )
 }
 
+fn get_local_ip() -> Result<String, String> {
+    local_ip()
+        .map(|ip| ip.to_string())
+        .map_err(|e| format!("Failed to detect local IP: {}", e))
+}
+
+fn normalize_url(url: &str) -> String {
+    url.trim().trim_end_matches('/').to_string()
+}
+
 fn load_settings_from_store(app: &AppHandle) -> Settings {
-    let store = app.store(".vpn-toggle.dat");
-    match store {
+    match app.store(".vpn-toggle.dat") {
         Ok(s) => {
             if let Some(val) = s.get(STORE_KEY) {
-                // serde(default) on VpnGateway::alias_name handles old schema gracefully
                 serde_json::from_value(val).unwrap_or_default()
             } else {
                 Settings::default()
             }
         }
-        Err(_) => Settings::default(),
+        Err(e) => {
+            write_log(&format!("Failed to open settings store: {}", e));
+            Settings::default()
+        }
     }
 }
 
@@ -165,31 +181,14 @@ fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), String> 
     Ok(())
 }
 
-#[tauri::command]
-async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
-    Ok(lock_settings(&state))
-}
-
-#[tauri::command]
-async fn save_settings(
-    settings: Settings,
-    state: State<'_, AppState>,
-    app: AppHandle,
-) -> Result<(), String> {
-    // Normalize base URL — strip trailing slash to prevent double-slash in API paths
-    let normalized = Settings {
-        base_url: normalize_url(&settings.base_url),
-        ..settings
-    };
-    persist_settings(&app, &normalized)?;
-    *state.settings.lock().unwrap_or_else(|e| e.into_inner()) = normalized;
-    Ok(())
-}
+// ── OPNsense API helpers ─────────────────────────────────────────────────────
 
 /// Check if the device's local IP is in the firewall alias.
 /// Uses GET /api/firewall/alias_util/list/{alias} — returns JSON with "rows" array.
+/// `local_ip` is passed in to avoid redundant system calls when checking multiple gateways.
 async fn fetch_alias_enabled(
     alias_name: &str,
+    local_ip: &str,
     settings: &Settings,
     client: &reqwest::Client,
 ) -> Result<bool, String> {
@@ -216,8 +215,6 @@ async fn fetch_alias_enabled(
         return Err(format!("Alias API error ({}): {}", http_status, text));
     }
 
-    let local_ip = get_local_ip()?;
-
     // Response: {"rows":[{"ip":"10.0.0.16","..."},...],"total":1}
     // Fall back to plain-text line scan if JSON parsing fails (older OPNsense).
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
@@ -242,7 +239,6 @@ struct GatewayInfo {
 }
 
 /// Check OPNsense gateway status via the routes API.
-/// Status values: "online" (healthy), "latency" (degraded but up), "offline" (down).
 async fn fetch_gateway_info(
     gateway_name: &str,
     settings: &Settings,
@@ -260,11 +256,8 @@ async fn fetch_gateway_info(
         .send()
         .await
         .map_err(|e| {
-            if e.is_timeout() {
-                "Connection to OPNsense timed out".to_string()
-            } else {
-                format!("Gateway status API request failed: {}", e)
-            }
+            if e.is_timeout() { "Connection to OPNsense timed out".to_string() }
+            else { format!("Gateway status API request failed: {}", e) }
         })?;
 
     let http_status = response.status();
@@ -280,7 +273,6 @@ async fn fetch_gateway_info(
         for item in items {
             if item.get("name").and_then(|v| v.as_str()) == Some(gateway_name) {
                 let gw_status = item.get("status").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-                // "online" = healthy, "latency" = degraded but up, "offline" = down
                 let is_online = !matches!(gw_status.as_str(), "offline" | "down" | "force_down");
                 let rtt  = item.get("delay").and_then(|v| v.as_str()).map(|s| s.to_string());
                 let rttd = item.get("stddev").and_then(|v| v.as_str()).map(|s| s.to_string());
@@ -290,7 +282,6 @@ async fn fetch_gateway_info(
                 return Ok(GatewayInfo { online: is_online, status: gw_status, rtt, rttd, loss });
             }
         }
-        // Log available gateway names to help diagnose name mismatches
         let names: Vec<&str> = items.iter()
             .filter_map(|i| i.get("name").and_then(|v| v.as_str()))
             .collect();
@@ -300,6 +291,28 @@ async fn fetch_gateway_info(
     }
 
     Err("Unexpected gateway status response format".to_string())
+}
+
+// ── Tauri commands ────────────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
+    Ok(lock_settings(&state))
+}
+
+#[tauri::command]
+async fn save_settings(
+    settings: Settings,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let normalized = Settings {
+        base_url: normalize_url(&settings.base_url),
+        ..settings
+    };
+    persist_settings(&app, &normalized)?;
+    *state.settings.lock().unwrap_or_else(|e| e.into_inner()) = normalized;
+    Ok(())
 }
 
 #[tauri::command]
@@ -316,11 +329,10 @@ async fn toggle_vpn(
     }
 
     let local_ip = get_local_ip()?;
-    // OPNsense alias_util API: add → alias_util/add/{alias}, remove → alias_util/delete/{alias}
     let endpoint = if enable { "add" } else { "delete" };
     let url = format!("{}/api/firewall/alias_util/{}/{}", settings.base_url, endpoint, alias_name);
 
-    let mut body = std::collections::HashMap::new();
+    let mut body = HashMap::new();
     body.insert("address", local_ip.as_str());
 
     let response = state.client
@@ -330,11 +342,8 @@ async fn toggle_vpn(
         .send()
         .await
         .map_err(|e| {
-            if e.is_timeout() {
-                "Connection to OPNsense timed out".to_string()
-            } else {
-                format!("API request failed: {}", e)
-            }
+            if e.is_timeout() { "Connection to OPNsense timed out".to_string() }
+            else { format!("API request failed: {}", e) }
         })?;
 
     if !response.status().is_success() {
@@ -343,8 +352,8 @@ async fn toggle_vpn(
     }
 
     // Apply firewall changes
-    let reconfigure_url = format!("{}/api/firewall/alias/reconfigure", settings.base_url);
     // OPNsense requires Content-Length to be set (411 otherwise) — send empty body.
+    let reconfigure_url = format!("{}/api/firewall/alias/reconfigure", settings.base_url);
     let reconfigure_response = state.client
         .post(&reconfigure_url)
         .header("Authorization", auth_header(&settings))
@@ -353,11 +362,8 @@ async fn toggle_vpn(
         .send()
         .await
         .map_err(|e| {
-            if e.is_timeout() {
-                "Alias updated but reconfigure timed out — changes may not be applied yet".to_string()
-            } else {
-                format!("Reconfigure request failed: {}", e)
-            }
+            if e.is_timeout() { "Alias updated but reconfigure timed out — changes may not be applied yet".to_string() }
+            else { format!("Reconfigure request failed: {}", e) }
         })?;
 
     if !reconfigure_response.status().is_success() {
@@ -365,8 +371,14 @@ async fn toggle_vpn(
         return Err(format!("Failed to reconfigure firewall: {}", text));
     }
 
-    // Update tray icon to reflect new state
-    update_tray_icon(&app, enable);
+    // Update alias state cache and compute accurate aggregate for tray icon.
+    // This prevents a false red icon when disabling one gateway while another is still active.
+    let any_enabled = {
+        let mut states = state.alias_states.lock().unwrap_or_else(|e| e.into_inner());
+        states.insert(alias_name.clone(), enable);
+        states.values().any(|&v| v)
+    };
+    update_tray_icon(&app, any_enabled);
 
     Ok(())
 }
@@ -375,12 +387,15 @@ async fn toggle_vpn(
 async fn get_all_vpn_status(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<VpnStatus>, String> {
     let settings = lock_settings(&state);
     let client = &state.client;
+
+    // Resolve local IP once — reused for all alias checks this cycle.
+    let local_ip = get_local_ip()?;
+
     let mut statuses = Vec::new();
 
     for gateway in &settings.gateways {
-        // Run alias and gateway status checks in parallel
         let (enabled_result, gw_result) = tokio::join!(
-            fetch_alias_enabled(&gateway.alias_name, &settings, client),
+            fetch_alias_enabled(&gateway.alias_name, &local_ip, &settings, client),
             fetch_gateway_info(&gateway.gateway_name, &settings, client)
         );
 
@@ -390,7 +405,6 @@ async fn get_all_vpn_status(app: AppHandle, state: State<'_, AppState>) -> Resul
             Err(_)   => (false, "unknown".to_string(), None, None, None),
         };
 
-        // Report both errors if both fail
         let error = match (enabled_result.err(), gw_result.err()) {
             (None, None) => None,
             (Some(e), None) => Some(format!("Alias: {}", e)),
@@ -412,12 +426,20 @@ async fn get_all_vpn_status(app: AppHandle, state: State<'_, AppState>) -> Resul
         });
     }
 
-    // Keep tray icon in sync with current state
+    // Refresh alias state cache and sync tray icon.
+    {
+        let mut states = state.alias_states.lock().unwrap_or_else(|e| e.into_inner());
+        for s in &statuses {
+            states.insert(s.alias_name.clone(), s.enabled);
+        }
+    }
     let any_enabled = statuses.iter().any(|s| s.enabled);
     update_tray_icon(&app, any_enabled);
 
     Ok(statuses)
 }
+
+// ── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
     setup_panic_hook();
@@ -431,6 +453,7 @@ fn main() {
             app.manage(AppState {
                 settings: Mutex::new(settings),
                 client: make_client(),
+                alias_states: Mutex::new(HashMap::new()),
             });
 
             let show_item = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
@@ -468,9 +491,8 @@ fn main() {
                 .build(app)?;
             app.manage(TrayState(tray_icon));
 
-            // Minimize to tray: intercept resize events; if window is minimized, hide it.
-            // This removes it from the taskbar — click tray icon to restore.
-            // Close button exits normally (no CloseRequested override needed).
+            // Minimize to tray: hide window on minimize (removes from taskbar).
+            // Close button exits normally.
             if let Some(window) = app.get_webview_window("main") {
                 let window_clone = window.clone();
                 window.on_window_event(move |event| {
