@@ -43,9 +43,5 @@
       "csp": null
     }
   },
-  "plugins": {
-    "store": {
-      "path": ".vpn-toggle.dat"
-    }
-  }
+  "plugins": {}
 }
