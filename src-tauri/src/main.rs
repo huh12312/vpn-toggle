@@ -441,7 +441,7 @@ fn main() {
                 .id("vpn-tray")
                 .icon(tauri::image::Image::from_bytes(TRAY_ICON_OFF).expect("tray-off icon"))
                 .menu(&menu)
-                .on_menu_event(|app, event| match event.id().as_ref() {
+                .on_menu_event(|app: &AppHandle, event| match event.id().as_ref() {
                     "show" => {
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.show();
@@ -453,7 +453,7 @@ fn main() {
                     }
                     _ => {}
                 })
-                .on_tray_icon_event(|tray, event| {
+                .on_tray_icon_event(|tray: &tauri::tray::TrayIcon, event| {
                     if let TrayIconEvent::Click {
                         button: tauri::tray::MouseButton::Left,
                         ..
