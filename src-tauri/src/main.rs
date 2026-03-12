@@ -446,16 +446,8 @@ fn main() {
                 })
                 .build(app)?;
 
-            // Hide to tray on close instead of quitting
-            if let Some(window) = app.get_webview_window("main") {
-                let window_clone = window.clone();
-                window.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        let _ = window_clone.hide();
-                    }
-                });
-            }
+            // Close button exits the app; minimize-to-tray is handled on the frontend.
+            // (No window event override needed — default CloseRequested exits normally.)
 
             write_log("Setup: complete");
             Ok(())
