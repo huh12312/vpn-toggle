@@ -173,8 +173,8 @@ async fn save_settings(
     Ok(())
 }
 
-/// Check if the device's local IP is in the firewall alias (toggle state).
-/// Uses exact line match to avoid substring false positives (e.g. 192.168.1.1 vs 192.168.1.10).
+/// Check if the device's local IP is in the firewall alias.
+/// Uses GET /api/firewall/alias_util/list/{alias} — returns JSON with "rows" array.
 async fn fetch_alias_enabled(
     alias_name: &str,
     settings: &Settings,
@@ -184,7 +184,7 @@ async fn fetch_alias_enabled(
         return Err("API credentials not configured".to_string());
     }
 
-    let url = format!("{}/api/firewall/alias/getAliasContent/{}", settings.base_url, alias_name);
+    let url = format!("{}/api/firewall/alias_util/list/{}", settings.base_url, alias_name);
 
     let response = client
         .get(&url)
@@ -192,21 +192,30 @@ async fn fetch_alias_enabled(
         .send()
         .await
         .map_err(|e| {
-            if e.is_timeout() {
-                "Connection to OPNsense timed out".to_string()
-            } else {
-                format!("Alias API request failed: {}", e)
-            }
+            if e.is_timeout() { "Connection to OPNsense timed out".to_string() }
+            else { format!("Alias API request failed: {}", e) }
         })?;
 
-    let status = response.status();
+    let http_status = response.status();
     let text = response.text().await.unwrap_or_default();
 
-    if !status.is_success() {
-        return Err(format!("Alias API error ({}): {}", status, text));
+    if !http_status.is_success() {
+        return Err(format!("Alias API error ({}): {}", http_status, text));
     }
 
     let local_ip = get_local_ip()?;
+
+    // Response: {"rows":[{"ip":"10.0.0.16","..."},...],"total":1}
+    // Fall back to plain-text line scan if JSON parsing fails (older OPNsense).
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+        if let Some(rows) = json.get("rows").and_then(|v| v.as_array()) {
+            return Ok(rows.iter().any(|row| {
+                row.get("ip").and_then(|v| v.as_str()).map(|ip| ip.trim() == local_ip).unwrap_or(false)
+                || row.as_str().map(|s| s.trim() == local_ip).unwrap_or(false)
+            }));
+        }
+    }
+    // Plain-text fallback
     Ok(text.lines().any(|line| line.trim() == local_ip))
 }
 
@@ -293,8 +302,9 @@ async fn toggle_vpn(
     }
 
     let local_ip = get_local_ip()?;
-    let endpoint = if enable { "addAliasAddress" } else { "delAliasAddress" };
-    let url = format!("{}/api/firewall/alias/{}/{}", settings.base_url, endpoint, alias_name);
+    // OPNsense alias_util API: add → alias_util/add/{alias}, remove → alias_util/delete/{alias}
+    let endpoint = if enable { "add" } else { "delete" };
+    let url = format!("{}/api/firewall/alias_util/{}/{}", settings.base_url, endpoint, alias_name);
 
     let mut body = std::collections::HashMap::new();
     body.insert("address", local_ip.as_str());
