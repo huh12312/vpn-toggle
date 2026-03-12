@@ -330,9 +330,11 @@ async fn toggle_vpn(
 
     // Apply firewall changes
     let reconfigure_url = format!("{}/api/firewall/alias/reconfigure", settings.base_url);
+    // OPNsense requires Content-Length to be set (411 otherwise) — send empty body.
     let reconfigure_response = state.client
         .post(&reconfigure_url)
         .header("Authorization", auth_header(&settings))
+        .body("")
         .send()
         .await
         .map_err(|e| {
