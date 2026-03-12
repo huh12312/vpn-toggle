@@ -152,10 +152,9 @@ function Settings({ settings, onSave, onCancel }: SettingsProps) {
           ) : (
             <div className="space-y-4">
               {formData.gateways.map((gateway, index) => {
-                const stableKey = `gateway-${index}-${gateway.gateway_name || index}`;
                 return (
                   <div
-                    key={stableKey}
+                    key={`gateway-${index}`}
                     className="border border-gray-200 rounded-md p-4 space-y-3"
                   >
                     <div className="flex justify-between items-center mb-2">

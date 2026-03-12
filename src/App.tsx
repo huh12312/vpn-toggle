@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import VpnList from "./components/VpnList";
 import Settings from "./components/Settings";
 
@@ -23,16 +22,6 @@ function App() {
 
   useEffect(() => {
     loadSettings();
-    // Minimize to tray: hide window (removes from taskbar) instead of minimizing
-    const appWindow = getCurrentWindow();
-    const unlisten = appWindow.onResized(async () => {
-      if (await appWindow.isMinimized()) {
-        await appWindow.hide();
-      }
-    });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
   }, []);
 
   const loadSettings = async () => {

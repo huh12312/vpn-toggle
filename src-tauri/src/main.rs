@@ -446,8 +446,19 @@ fn main() {
                 })
                 .build(app)?;
 
-            // Close button exits the app; minimize-to-tray is handled on the frontend.
-            // (No window event override needed — default CloseRequested exits normally.)
+            // Minimize to tray: intercept resize events; if window is minimized, hide it.
+            // This removes it from the taskbar — click tray icon to restore.
+            // Close button exits normally (no CloseRequested override needed).
+            if let Some(window) = app.get_webview_window("main") {
+                let window_clone = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Resized(_) = event {
+                        if window_clone.is_minimized().unwrap_or(false) {
+                            let _ = window_clone.hide();
+                        }
+                    }
+                });
+            }
 
             write_log("Setup: complete");
             Ok(())
