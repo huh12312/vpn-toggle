@@ -7,6 +7,18 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
+
+const TRAY_ICON_ON:  &[u8] = include_bytes!("../icons/tray-on-32.png");
+const TRAY_ICON_OFF: &[u8] = include_bytes!("../icons/tray-off-32.png");
+
+fn update_tray_icon(app: &AppHandle, any_enabled: bool) {
+    let bytes = if any_enabled { TRAY_ICON_ON } else { TRAY_ICON_OFF };
+    if let Ok(icon) = tauri::image::Image::from_bytes(bytes) {
+        if let Some(tray) = app.tray_by_id("vpn-tray") {
+            let _ = tray.set_icon(Some(icon));
+        }
+    }
+}
 use tauri_plugin_store::StoreExt;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -291,6 +303,7 @@ async fn fetch_gateway_info(
 
 #[tauri::command]
 async fn toggle_vpn(
+    app: AppHandle,
     alias_name: String,
     enable: bool,
     state: State<'_, AppState>,
@@ -351,11 +364,14 @@ async fn toggle_vpn(
         return Err(format!("Failed to reconfigure firewall: {}", text));
     }
 
+    // Update tray icon to reflect new state
+    update_tray_icon(&app, enable);
+
     Ok(())
 }
 
 #[tauri::command]
-async fn get_all_vpn_status(state: State<'_, AppState>) -> Result<Vec<VpnStatus>, String> {
+async fn get_all_vpn_status(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<VpnStatus>, String> {
     let settings = lock_settings(&state);
     let client = &state.client;
     let mut statuses = Vec::new();
@@ -395,6 +411,10 @@ async fn get_all_vpn_status(state: State<'_, AppState>) -> Result<Vec<VpnStatus>
         });
     }
 
+    // Keep tray icon in sync with current state
+    let any_enabled = statuses.iter().any(|s| s.enabled);
+    update_tray_icon(&app, any_enabled);
+
     Ok(statuses)
 }
 
@@ -418,7 +438,8 @@ fn main() {
 
             write_log("Setup: building tray icon");
             let _tray = TrayIconBuilder::new()
-                .icon(tauri::include_image!("icons/32x32.png"))
+                .id("vpn-tray")
+                .icon(tauri::image::Image::from_bytes(TRAY_ICON_OFF).expect("tray-off icon"))
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "show" => {
