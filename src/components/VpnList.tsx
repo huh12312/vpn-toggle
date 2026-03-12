@@ -8,6 +8,10 @@ interface VpnStatus {
   display_name: string;
   enabled: boolean;
   online: boolean;
+  gateway_status: string; // "online" | "latency" | "offline" | "unknown"
+  rtt?: string;
+  rttd?: string;
+  loss?: string;
   error?: string;
 }
 
@@ -43,26 +47,17 @@ function VpnList({ settings }: VpnListProps) {
     }
   }, [settings.gateways.length, settings.base_url, settings.api_key, settings.api_secret]);
 
-  // Refresh on settings change and on mount
-  useEffect(() => {
-    refreshStatuses();
-  }, [refreshStatuses]);
+  useEffect(() => { refreshStatuses(); }, [refreshStatuses]);
 
-  // Auto-refresh every 30s
   useEffect(() => {
     intervalRef.current = setInterval(refreshStatuses, AUTO_REFRESH_MS);
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [refreshStatuses]);
 
   const handleToggle = async (aliasName: string, currentState: boolean) => {
     setToggling(aliasName);
     try {
-      await invoke("toggle_vpn", {
-        aliasName,
-        enable: !currentState,
-      });
+      await invoke("toggle_vpn", { aliasName, enable: !currentState });
       await refreshStatuses();
     } catch (error) {
       setFetchError(`Toggle failed: ${error}`);
@@ -73,14 +68,24 @@ function VpnList({ settings }: VpnListProps) {
 
   const getStatusLabel = (vpn: VpnStatus) => {
     if (vpn.error) return "Error";
+    if (vpn.gateway_status === "latency") return "Degraded";
     if (!vpn.online) return "Gateway Down";
     return vpn.enabled ? "Active" : "Inactive";
   };
 
   const getStatusColor = (vpn: VpnStatus) => {
     if (vpn.error) return "bg-red-500";
-    if (!vpn.online) return "bg-yellow-500";
+    if (!vpn.online) return "bg-red-400";
+    if (vpn.gateway_status === "latency") return "bg-yellow-400";
     return vpn.enabled ? "bg-green-500" : "bg-gray-400";
+  };
+
+  const formatMetrics = (vpn: VpnStatus) => {
+    const parts: string[] = [];
+    if (vpn.rtt)  parts.push(`RTT ${vpn.rtt}`);
+    if (vpn.rttd) parts.push(`±${vpn.rttd}`);
+    if (vpn.loss) parts.push(`loss ${vpn.loss}`);
+    return parts.join("  ·  ");
   };
 
   if (!settings.api_key || !settings.api_secret) {
@@ -118,38 +123,33 @@ function VpnList({ settings }: VpnListProps) {
         </button>
       </div>
 
-      {/* Inline error banner — no blocking alert() */}
       {fetchError && (
         <div className="mb-4 bg-red-50 border border-red-300 text-red-700 rounded p-3 flex justify-between items-start">
           <span className="text-sm">{fetchError}</span>
-          <button
-            onClick={() => setFetchError(null)}
-            className="ml-3 text-red-500 hover:text-red-700 font-bold leading-none"
-          >
-            ×
-          </button>
+          <button onClick={() => setFetchError(null)} className="ml-3 text-red-500 hover:text-red-700 font-bold leading-none">×</button>
         </div>
       )}
 
       <div className="space-y-3">
         {vpnStatuses.map((vpn) => {
           const stableKey = `${vpn.gateway_name}::${vpn.alias_name}`;
+          const metrics = formatMetrics(vpn);
           return (
-            <div
-              key={stableKey}
-              className="bg-white rounded-lg shadow p-4 flex items-center justify-between"
-            >
-              <div className="flex-1">
+            <div key={stableKey} className="bg-white rounded-lg shadow p-4 flex items-center justify-between">
+              <div className="flex-1 min-w-0">
                 <h3 className="font-semibold text-gray-800">{vpn.display_name}</h3>
                 <p className="text-xs text-gray-400">
                   Gateway: {vpn.gateway_name} · Alias: {vpn.alias_name}
                 </p>
+                {metrics && (
+                  <p className="text-xs text-gray-500 mt-0.5 font-mono">{metrics}</p>
+                )}
                 {vpn.error && (
                   <p className="text-xs text-red-500 mt-1">{vpn.error}</p>
                 )}
               </div>
 
-              <div className="flex items-center space-x-3">
+              <div className="flex items-center space-x-3 ml-3 shrink-0">
                 <div className="flex items-center">
                   <div className={`w-3 h-3 rounded-full mr-2 ${getStatusColor(vpn)}`} />
                   <span className="text-sm text-gray-600">{getStatusLabel(vpn)}</span>
@@ -162,11 +162,9 @@ function VpnList({ settings }: VpnListProps) {
                     vpn.enabled ? "bg-blue-600" : "bg-gray-300"
                   }`}
                 >
-                  <span
-                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                      vpn.enabled ? "translate-x-6" : "translate-x-1"
-                    }`}
-                  />
+                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    vpn.enabled ? "translate-x-6" : "translate-x-1"
+                  }`} />
                 </button>
               </div>
             </div>
@@ -174,9 +172,7 @@ function VpnList({ settings }: VpnListProps) {
         })}
       </div>
 
-      <p className="text-xs text-gray-400 mt-4 text-center">
-        Auto-refreshes every 30s
-      </p>
+      <p className="text-xs text-gray-400 mt-4 text-center">Auto-refreshes every 30s</p>
     </div>
   );
 }

@@ -92,8 +92,12 @@ struct VpnStatus {
     gateway_name: String,
     alias_name: String,
     display_name: String,
-    enabled: bool,   // device IP is in the alias
-    online: bool,    // OPNsense gateway is up
+    enabled: bool,          // device IP is in the alias
+    online: bool,           // OPNsense gateway is up (not offline)
+    gateway_status: String, // raw status: "online", "latency", "offline", etc.
+    rtt: Option<String>,    // round-trip time (e.g. "12.3 ms")
+    rttd: Option<String>,   // RTT deviation
+    loss: Option<String>,   // packet loss (e.g. "0.0 %")
     error: Option<String>,
 }
 
@@ -206,12 +210,22 @@ async fn fetch_alias_enabled(
     Ok(text.lines().any(|line| line.trim() == local_ip))
 }
 
-/// Check OPNsense gateway status (online/offline) via the routes API.
-async fn fetch_gateway_online(
+#[derive(Debug)]
+struct GatewayInfo {
+    online: bool,
+    status: String,
+    rtt: Option<String>,
+    rttd: Option<String>,
+    loss: Option<String>,
+}
+
+/// Check OPNsense gateway status via the routes API.
+/// Status values: "online" (healthy), "latency" (degraded but up), "offline" (down).
+async fn fetch_gateway_info(
     gateway_name: &str,
     settings: &Settings,
     client: &reqwest::Client,
-) -> Result<bool, String> {
+) -> Result<GatewayInfo, String> {
     if settings.api_key.is_empty() || settings.api_secret.is_empty() {
         return Err("API credentials not configured".to_string());
     }
@@ -231,10 +245,10 @@ async fn fetch_gateway_online(
             }
         })?;
 
-    let status = response.status();
-    if !status.is_success() {
+    let http_status = response.status();
+    if !http_status.is_success() {
         let text = response.text().await.unwrap_or_default();
-        return Err(format!("Gateway status API error ({}): {}", status, text));
+        return Err(format!("Gateway status API error ({}): {}", http_status, text));
     }
 
     let json: serde_json::Value = response.json().await
@@ -243,16 +257,18 @@ async fn fetch_gateway_online(
     if let Some(items) = json.get("items").and_then(|v| v.as_array()) {
         for item in items {
             if item.get("name").and_then(|v| v.as_str()) == Some(gateway_name) {
-                // OPNsense reports a healthy gateway as status="none" (no issues).
-                // Other values: "loss", "delay", "down", "force_down".
-                // We treat anything that isn't explicitly down as online.
-                let gw_status = item.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
-                let is_online = !matches!(gw_status, "down" | "force_down");
-                write_log(&format!("Gateway '{}' status='{}' online={}", gateway_name, gw_status, is_online));
-                return Ok(is_online);
+                let gw_status = item.get("status").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+                // "online" = healthy, "latency" = degraded but up, "offline" = down
+                let is_online = !matches!(gw_status.as_str(), "offline" | "down" | "force_down");
+                let rtt  = item.get("delay").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let rttd = item.get("stddev").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let loss = item.get("loss").and_then(|v| v.as_str()).map(|s| s.to_string());
+                write_log(&format!("Gateway '{}' status='{}' online={} rtt={:?} loss={:?}",
+                    gateway_name, gw_status, is_online, rtt, loss));
+                return Ok(GatewayInfo { online: is_online, status: gw_status, rtt, rttd, loss });
             }
         }
-        // Log available gateway names to help with misconfiguration
+        // Log available gateway names to help diagnose name mismatches
         let names: Vec<&str> = items.iter()
             .filter_map(|i| i.get("name").and_then(|v| v.as_str()))
             .collect();
@@ -333,16 +349,19 @@ async fn get_all_vpn_status(state: State<'_, AppState>) -> Result<Vec<VpnStatus>
 
     for gateway in &settings.gateways {
         // Run alias and gateway status checks in parallel
-        let (enabled_result, online_result) = tokio::join!(
+        let (enabled_result, gw_result) = tokio::join!(
             fetch_alias_enabled(&gateway.alias_name, &settings, client),
-            fetch_gateway_online(&gateway.gateway_name, &settings, client)
+            fetch_gateway_info(&gateway.gateway_name, &settings, client)
         );
 
         let enabled = enabled_result.as_ref().copied().unwrap_or(false);
-        let online = online_result.as_ref().copied().unwrap_or(false);
+        let (online, gw_status, rtt, rttd, loss) = match &gw_result {
+            Ok(info) => (info.online, info.status.clone(), info.rtt.clone(), info.rttd.clone(), info.loss.clone()),
+            Err(_)   => (false, "unknown".to_string(), None, None, None),
+        };
 
         // Report both errors if both fail
-        let error = match (enabled_result.err(), online_result.err()) {
+        let error = match (enabled_result.err(), gw_result.err()) {
             (None, None) => None,
             (Some(e), None) => Some(format!("Alias: {}", e)),
             (None, Some(e)) => Some(format!("Gateway: {}", e)),
@@ -355,6 +374,10 @@ async fn get_all_vpn_status(state: State<'_, AppState>) -> Result<Vec<VpnStatus>
             display_name: gateway.display_name.clone(),
             enabled,
             online,
+            gateway_status: gw_status,
+            rtt,
+            rttd,
+            loss,
             error,
         });
     }
