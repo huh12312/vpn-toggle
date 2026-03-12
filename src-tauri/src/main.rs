@@ -11,12 +11,13 @@ use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 const TRAY_ICON_ON:  &[u8] = include_bytes!("../icons/tray-on-32.png");
 const TRAY_ICON_OFF: &[u8] = include_bytes!("../icons/tray-off-32.png");
 
+struct TrayState(tauri::tray::TrayIcon);
+
 fn update_tray_icon(app: &AppHandle, any_enabled: bool) {
     let bytes = if any_enabled { TRAY_ICON_ON } else { TRAY_ICON_OFF };
     if let Ok(icon) = tauri::image::Image::from_bytes(bytes) {
-        if let Some(tray) = app.tray_by_id("vpn-tray") {
-            let _ = tray.set_icon(Some(icon));
-        }
+        let tray = app.state::<TrayState>();
+        let _ = tray.0.set_icon(Some(icon));
     }
 }
 use tauri_plugin_store::StoreExt;
@@ -437,8 +438,7 @@ fn main() {
             let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
 
             write_log("Setup: building tray icon");
-            let _tray = TrayIconBuilder::new()
-                .id("vpn-tray")
+            let tray_icon = TrayIconBuilder::new()
                 .icon(tauri::image::Image::from_bytes(TRAY_ICON_OFF).expect("tray-off icon"))
                 .menu(&menu)
                 .on_menu_event(|app: &AppHandle, event| match event.id().as_ref() {
@@ -466,6 +466,7 @@ fn main() {
                     }
                 })
                 .build(app)?;
+            app.manage(TrayState(tray_icon));
 
             // Minimize to tray: intercept resize events; if window is minimized, hide it.
             // This removes it from the taskbar — click tray icon to restore.
