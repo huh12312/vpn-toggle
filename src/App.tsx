@@ -5,8 +5,8 @@ import Settings from "./components/Settings";
 
 export interface VpnGateway {
   display_name: string;
-  gateway_name: string; // OPNsense gateway name for status (e.g. WAN_VPN)
-  alias_name: string;   // Firewall alias name for toggle (e.g. vpn_devices)
+  gateway_name: string;
+  alias_name: string;
 }
 
 export interface AppSettings {
@@ -23,52 +23,65 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [credentials, setCredentials] = useState<Credentials | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
-    loadSettings();
-    loadCredentials();
+    loadAll();
   }, []);
 
-  const loadSettings = async () => {
+  const loadAll = async () => {
+    setLoadError(null);
     try {
-      const settings = await invoke<AppSettings>("get_settings");
-      setSettings(settings);
-    } catch (error) {
-      console.error("Failed to load settings:", error);
-    }
-  };
-
-  const loadCredentials = async () => {
-    try {
-      const creds = await invoke<[string, string] | null>("load_credentials");
+      const [s, creds] = await Promise.all([
+        invoke<AppSettings>("get_settings"),
+        invoke<[string, string] | null>("load_credentials"),
+      ]);
+      setSettings(s);
       if (creds) {
         setCredentials({ api_key: creds[0], api_secret: creds[1] });
       } else {
         setCredentials(null);
         setShowSettings(true);
       }
-    } catch (error) {
-      console.error("Failed to load credentials:", error);
-      setCredentials(null);
-      setShowSettings(true);
+    } catch (e) {
+      setLoadError(String(e));
     }
   };
 
   const handleSaveSettings = async (newSettings: AppSettings, newCredentials: Credentials) => {
+    setSaveError(null);
     try {
       await invoke("save_settings", { settings: newSettings });
       await invoke("save_credentials", {
         apiKey: newCredentials.api_key,
-        apiSecret: newCredentials.api_secret
+        apiSecret: newCredentials.api_secret,
       });
       setSettings(newSettings);
       setCredentials(newCredentials);
       setShowSettings(false);
-    } catch (error) {
-      console.error("Failed to save settings:", error);
-      alert("Failed to save settings: " + error);
+    } catch (e) {
+      setSaveError(String(e));
     }
   };
+
+  // Load error — show retry screen instead of hanging on "Loading..."
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen bg-gray-100 gap-4 p-8">
+        <div className="bg-red-50 border border-red-300 text-red-700 rounded p-4 text-sm max-w-md w-full text-center">
+          <p className="font-semibold mb-1">Failed to load settings</p>
+          <p className="text-xs text-red-500">{loadError}</p>
+        </div>
+        <button
+          onClick={loadAll}
+          className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded transition-colors"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   if (!settings || credentials === null) {
     return (
@@ -83,12 +96,20 @@ function App() {
       <header className="bg-blue-600 text-white p-4 flex justify-between items-center">
         <h1 className="text-xl font-bold">VPN Toggle</h1>
         <button
-          onClick={() => setShowSettings(!showSettings)}
+          onClick={() => { setShowSettings(!showSettings); setSaveError(null); }}
           className="bg-blue-700 hover:bg-blue-800 px-4 py-2 rounded transition-colors"
         >
           {showSettings ? "Close Settings" : "Settings"}
         </button>
       </header>
+
+      {/* Inline save error banner — replaces alert() */}
+      {saveError && (
+        <div className="bg-red-50 border-b border-red-300 text-red-700 px-4 py-2 text-sm flex justify-between items-center">
+          <span>Failed to save settings: {saveError}</span>
+          <button onClick={() => setSaveError(null)} className="ml-4 text-red-500 hover:text-red-700 font-bold">×</button>
+        </div>
+      )}
 
       <main className="flex-1 overflow-auto">
         {showSettings ? (
