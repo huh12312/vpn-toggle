@@ -613,6 +613,20 @@ fn main() {
                 });
             }
 
+            // First-run: show window automatically if no credentials are saved yet,
+            // so the user can configure the app. Otherwise stay hidden in tray.
+            {
+                let has_credentials = app.state::<AppState>()
+                    .credentials.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+                if !has_credentials {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                        write_log("Setup: first run — showing window for initial configuration");
+                    }
+                }
+            }
+
             // Minimize to tray: hide window on minimize (removes from taskbar).
             // Close button exits normally.
             if let Some(window) = app.get_webview_window("main") {

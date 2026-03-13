@@ -1,7 +1,7 @@
 {
   "productName": "VPN Toggle",
   "version": "1.0.0",
-  "identifier": "com.vpntoggle.app",
+  "identifier": "com.vpntoggle.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
@@ -37,7 +37,7 @@
         "minHeight": 400,
         "resizable": true,
         "fullscreen": false,
-        "visible": true,
+        "visible": false,
         "center": true
       }
     ],
