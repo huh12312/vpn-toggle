@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use base64::{Engine as _, engine::general_purpose};
+use keyring::Entry;
 use local_ip_address::local_ip;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -81,8 +82,6 @@ struct VpnGateway {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Settings {
     base_url: String,
-    api_key: String,
-    api_secret: String,
     gateways: Vec<VpnGateway>,
 }
 
@@ -90,8 +89,6 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             base_url: "https://10.0.0.1:444".to_string(),
-            api_key: String::new(),
-            api_secret: String::new(),
             gateways: Vec::new(),
         }
     }
@@ -140,10 +137,22 @@ fn lock_settings(state: &State<'_, AppState>) -> Settings {
         .clone()
 }
 
-fn auth_header(settings: &Settings) -> String {
+/// Load credentials from OS keyring. Returns None if either credential is missing.
+/// Note: On macOS/Linux, this requires the app to run in a context with a running secret service.
+fn load_credentials_from_keyring() -> Option<(String, String)> {
+    let api_key_entry = Entry::new("vpn-toggle", "api_key").ok()?;
+    let api_secret_entry = Entry::new("vpn-toggle", "api_secret").ok()?;
+
+    let api_key = api_key_entry.get_password().ok()?;
+    let api_secret = api_secret_entry.get_password().ok()?;
+
+    Some((api_key, api_secret))
+}
+
+fn auth_header(api_key: &str, api_secret: &str) -> String {
     format!(
         "Basic {}",
-        general_purpose::STANDARD.encode(format!("{}:{}", settings.api_key, settings.api_secret))
+        general_purpose::STANDARD.encode(format!("{}:{}", api_key, api_secret))
     )
 }
 
@@ -190,9 +199,11 @@ async fn fetch_alias_enabled(
     alias_name: &str,
     local_ip: &str,
     settings: &Settings,
+    api_key: &str,
+    api_secret: &str,
     client: &reqwest::Client,
 ) -> Result<bool, String> {
-    if settings.api_key.is_empty() || settings.api_secret.is_empty() {
+    if api_key.is_empty() || api_secret.is_empty() {
         return Err("API credentials not configured".to_string());
     }
 
@@ -200,7 +211,7 @@ async fn fetch_alias_enabled(
 
     let response = client
         .get(&url)
-        .header("Authorization", auth_header(settings))
+        .header("Authorization", auth_header(api_key, api_secret))
         .send()
         .await
         .map_err(|e| {
@@ -242,9 +253,11 @@ struct GatewayInfo {
 async fn fetch_gateway_info(
     gateway_name: &str,
     settings: &Settings,
+    api_key: &str,
+    api_secret: &str,
     client: &reqwest::Client,
 ) -> Result<GatewayInfo, String> {
-    if settings.api_key.is_empty() || settings.api_secret.is_empty() {
+    if api_key.is_empty() || api_secret.is_empty() {
         return Err("API credentials not configured".to_string());
     }
 
@@ -252,7 +265,7 @@ async fn fetch_gateway_info(
 
     let response = client
         .get(&url)
-        .header("Authorization", auth_header(settings))
+        .header("Authorization", auth_header(api_key, api_secret))
         .send()
         .await
         .map_err(|e| {
@@ -296,6 +309,40 @@ async fn fetch_gateway_info(
 // ── Tauri commands ────────────────────────────────────────────────────────────
 
 #[tauri::command]
+async fn save_credentials(api_key: String, api_secret: String) -> Result<(), String> {
+    let api_key_entry = Entry::new("vpn-toggle", "api_key")
+        .map_err(|e| format!("Failed to create keyring entry for api_key: {}", e))?;
+    let api_secret_entry = Entry::new("vpn-toggle", "api_secret")
+        .map_err(|e| format!("Failed to create keyring entry for api_secret: {}", e))?;
+
+    api_key_entry.set_password(&api_key)
+        .map_err(|e| format!("Failed to save api_key to keyring: {}", e))?;
+    api_secret_entry.set_password(&api_secret)
+        .map_err(|e| format!("Failed to save api_secret to keyring: {}", e))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn load_credentials() -> Result<Option<(String, String)>, String> {
+    Ok(load_credentials_from_keyring())
+}
+
+#[tauri::command]
+async fn delete_credentials() -> Result<(), String> {
+    let api_key_entry = Entry::new("vpn-toggle", "api_key")
+        .map_err(|e| format!("Failed to create keyring entry for api_key: {}", e))?;
+    let api_secret_entry = Entry::new("vpn-toggle", "api_secret")
+        .map_err(|e| format!("Failed to create keyring entry for api_secret: {}", e))?;
+
+    // Ignore errors if credentials don't exist
+    let _ = api_key_entry.delete_credential();
+    let _ = api_secret_entry.delete_credential();
+
+    Ok(())
+}
+
+#[tauri::command]
 async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
     Ok(lock_settings(&state))
 }
@@ -324,9 +371,8 @@ async fn toggle_vpn(
 ) -> Result<(), String> {
     let settings = lock_settings(&state);
 
-    if settings.api_key.is_empty() || settings.api_secret.is_empty() {
-        return Err("API credentials not configured".to_string());
-    }
+    let (api_key, api_secret) = load_credentials_from_keyring()
+        .ok_or_else(|| "API credentials not configured".to_string())?;
 
     let local_ip = get_local_ip()?;
     let endpoint = if enable { "add" } else { "delete" };
@@ -337,7 +383,7 @@ async fn toggle_vpn(
 
     let response = state.client
         .post(&url)
-        .header("Authorization", auth_header(&settings))
+        .header("Authorization", auth_header(&api_key, &api_secret))
         .json(&body)
         .send()
         .await
@@ -356,7 +402,7 @@ async fn toggle_vpn(
     let reconfigure_url = format!("{}/api/firewall/alias/reconfigure", settings.base_url);
     let reconfigure_response = state.client
         .post(&reconfigure_url)
-        .header("Authorization", auth_header(&settings))
+        .header("Authorization", auth_header(&api_key, &api_secret))
         .header("Content-Length", "0")
         .body("")
         .send()
@@ -388,6 +434,9 @@ async fn get_all_vpn_status(app: AppHandle, state: State<'_, AppState>) -> Resul
     let settings = lock_settings(&state);
     let client = &state.client;
 
+    let (api_key, api_secret) = load_credentials_from_keyring()
+        .ok_or_else(|| "API credentials not configured".to_string())?;
+
     // Resolve local IP once — reused for all alias checks this cycle.
     let local_ip = get_local_ip()?;
 
@@ -395,8 +444,8 @@ async fn get_all_vpn_status(app: AppHandle, state: State<'_, AppState>) -> Resul
 
     for gateway in &settings.gateways {
         let (enabled_result, gw_result) = tokio::join!(
-            fetch_alias_enabled(&gateway.alias_name, &local_ip, &settings, client),
-            fetch_gateway_info(&gateway.gateway_name, &settings, client)
+            fetch_alias_enabled(&gateway.alias_name, &local_ip, &settings, &api_key, &api_secret, client),
+            fetch_gateway_info(&gateway.gateway_name, &settings, &api_key, &api_secret, client)
         );
 
         let enabled = enabled_result.as_ref().copied().unwrap_or(false);
@@ -510,6 +559,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_settings,
             save_settings,
+            save_credentials,
+            load_credentials,
+            delete_credentials,
             toggle_vpn,
             get_all_vpn_status
         ])

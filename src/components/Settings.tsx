@@ -1,17 +1,18 @@
 import { useState } from "react";
-import { AppSettings, VpnGateway } from "../App";
+import { AppSettings, VpnGateway, Credentials } from "../App";
 
 interface SettingsProps {
   settings: AppSettings;
-  onSave: (settings: AppSettings) => void;
+  credentials: Credentials;
+  onSave: (settings: AppSettings, credentials: Credentials) => void;
   onCancel: () => void;
 }
 
-function validateSettings(data: AppSettings): string | null {
+function validateSettings(data: AppSettings, creds: Credentials): string | null {
   if (!data.base_url.trim()) return "Base URL is required.";
   if (!/^https?:\/\/.+/.test(data.base_url.trim())) return "Base URL must start with http:// or https://";
-  if (!data.api_key.trim()) return "API Key is required.";
-  if (!data.api_secret.trim()) return "API Secret is required.";
+  if (!creds.api_key.trim()) return "API Key is required.";
+  if (!creds.api_secret.trim()) return "API Secret is required.";
   for (let i = 0; i < data.gateways.length; i++) {
     const g = data.gateways[i];
     if (!g.display_name.trim()) return `Gateway ${i + 1}: Display Name is required.`;
@@ -25,19 +26,20 @@ function validateSettings(data: AppSettings): string | null {
   return null;
 }
 
-function Settings({ settings, onSave, onCancel }: SettingsProps) {
+function Settings({ settings, credentials, onSave, onCancel }: SettingsProps) {
   const [formData, setFormData] = useState<AppSettings>(settings);
+  const [formCredentials, setFormCredentials] = useState<Credentials>(credentials);
   const [validationError, setValidationError] = useState<string | null>(null);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const err = validateSettings(formData);
+    const err = validateSettings(formData, formCredentials);
     if (err) {
       setValidationError(err);
       return;
     }
     setValidationError(null);
-    onSave(formData);
+    onSave(formData, formCredentials);
   };
 
   const addGateway = () => {
@@ -106,9 +108,9 @@ function Settings({ settings, onSave, onCancel }: SettingsProps) {
             </label>
             <input
               type="text"
-              value={formData.api_key}
+              value={formCredentials.api_key}
               onChange={(e) =>
-                setFormData({ ...formData, api_key: e.target.value })
+                setFormCredentials({ ...formCredentials, api_key: e.target.value })
               }
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               placeholder="Your OPNsense API Key"
@@ -121,9 +123,9 @@ function Settings({ settings, onSave, onCancel }: SettingsProps) {
             </label>
             <input
               type="password"
-              value={formData.api_secret}
+              value={formCredentials.api_secret}
               onChange={(e) =>
-                setFormData({ ...formData, api_secret: e.target.value })
+                setFormCredentials({ ...formCredentials, api_secret: e.target.value })
               }
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               placeholder="Your OPNsense API Secret"
