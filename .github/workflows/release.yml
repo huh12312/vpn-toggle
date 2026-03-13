@@ -39,7 +39,9 @@ jobs:
         run: npx tsc --noEmit
 
       - name: Rust check
-        run: cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+        # --no-default-features skips custom-protocol, which prevents tauri::generate_context!()
+        # from panicking when ../dist doesn't exist (frontend not built in lint job)
+        run: cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --no-default-features
 
   build-windows:
     name: Build Windows
