@@ -122,6 +122,10 @@ struct VpnStatus {
 struct AppState {
     settings: Mutex<Settings>,
     client: reqwest::Client,
+    /// Cached credentials loaded from OS keyring at startup.
+    /// Updated on save_credentials / cleared on delete_credentials.
+    /// Avoids hitting the keyring on every API call (important on Linux).
+    credentials: Mutex<Option<(String, String)>>,
     /// Last known enabled state per alias — used for accurate aggregate tray icon
     /// when a single gateway is toggled.
     alias_states: Mutex<HashMap<String, bool>>,
@@ -318,7 +322,11 @@ async fn fetch_gateway_info(
 // ── Tauri commands ────────────────────────────────────────────────────────────
 
 #[tauri::command]
-async fn save_credentials(api_key: String, api_secret: String) -> Result<(), String> {
+async fn save_credentials(
+    api_key: String,
+    api_secret: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     if api_key.trim().is_empty() {
         return Err("API key cannot be empty".to_string());
     }
@@ -336,24 +344,30 @@ async fn save_credentials(api_key: String, api_secret: String) -> Result<(), Str
     api_secret_entry.set_password(&api_secret)
         .map_err(|e| format!("Failed to save api_secret to keyring: {}", e))?;
 
+    // Update in-memory cache so subsequent API calls don't re-hit the keyring.
+    *state.credentials.lock().unwrap_or_else(|e| e.into_inner()) = Some((api_key, api_secret));
+
     Ok(())
 }
 
 #[tauri::command]
-async fn load_credentials() -> Result<Option<(String, String)>, String> {
-    Ok(load_credentials_from_keyring())
+async fn load_credentials(state: State<'_, AppState>) -> Result<Option<(String, String)>, String> {
+    Ok(state.credentials.lock().unwrap_or_else(|e| e.into_inner()).clone())
 }
 
 #[tauri::command]
-async fn delete_credentials() -> Result<(), String> {
+async fn delete_credentials(state: State<'_, AppState>) -> Result<(), String> {
     let api_key_entry = Entry::new("vpn-toggle", "api_key")
         .map_err(|e| format!("Failed to create keyring entry for api_key: {}", e))?;
     let api_secret_entry = Entry::new("vpn-toggle", "api_secret")
         .map_err(|e| format!("Failed to create keyring entry for api_secret: {}", e))?;
 
-    // Ignore errors if credentials don't exist
+    // Ignore errors if credentials don't already exist
     let _ = api_key_entry.delete_credential();
     let _ = api_secret_entry.delete_credential();
+
+    // Clear in-memory cache.
+    *state.credentials.lock().unwrap_or_else(|e| e.into_inner()) = None;
 
     Ok(())
 }
@@ -387,7 +401,10 @@ async fn toggle_vpn(
 ) -> Result<(), String> {
     let settings = lock_settings(&state);
 
-    let (api_key, api_secret) = load_credentials_from_keyring()
+    let (api_key, api_secret) = state.credentials
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
         .ok_or_else(|| "API credentials not configured".to_string())?;
 
     let local_ip = get_local_ip()?;
@@ -450,7 +467,10 @@ async fn get_all_vpn_status(app: AppHandle, state: State<'_, AppState>) -> Resul
     let settings = lock_settings(&state);
     let client = &state.client;
 
-    let (api_key, api_secret) = load_credentials_from_keyring()
+    let (api_key, api_secret) = state.credentials
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
         .ok_or_else(|| "API credentials not configured".to_string())?;
 
     // Resolve local IP once — reused for all alias checks this cycle.
@@ -515,9 +535,16 @@ fn main() {
         .setup(|app| {
             write_log("Setup: loading settings");
             let settings = load_settings_from_store(app.handle());
+            let cached_credentials = load_credentials_from_keyring();
+            if cached_credentials.is_some() {
+                write_log("Setup: credentials loaded from keyring");
+            } else {
+                write_log("Setup: no credentials found in keyring");
+            }
             app.manage(AppState {
                 settings: Mutex::new(settings),
                 client: make_client(),
+                credentials: Mutex::new(cached_credentials),
                 alias_states: Mutex::new(HashMap::new()),
             });
 
