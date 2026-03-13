@@ -39,14 +39,14 @@ jobs:
           $version = "${{ github.ref_name }}".TrimStart('v')
           Write-Host "Setting version to $version"
 
-          # Update tauri.conf.json
+          # Update tauri.conf.json — match "version" only at the top-level key
           $conf = Get-Content -Path "src-tauri/tauri.conf.json" -Raw
-          $conf = $conf -replace '"version":\s*"[^"]*"', "`"version`": `"$version`""
+          $conf = $conf -replace '(?m)^(\s*"version"\s*:\s*)"[^"]*"', "`${1}`"$version`""
           Set-Content -Path "src-tauri/tauri.conf.json" -Value $conf
 
-          # Update Cargo.toml
+          # Update Cargo.toml — (?m) enables multiline so ^ matches start-of-line
           $cargo = Get-Content -Path "src-tauri/Cargo.toml" -Raw
-          $cargo = $cargo -replace '^version = "[^"]*"', "version = `"$version`""
+          $cargo = $cargo -replace '(?m)^version = "[^"]*"', "version = `"$version`""
           Set-Content -Path "src-tauri/Cargo.toml" -Value $cargo
 
           Write-Host "Done — tauri.conf.json and Cargo.toml updated to $version"
