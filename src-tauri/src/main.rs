@@ -583,6 +583,36 @@ fn main() {
                 .build(app)?;
             app.manage(TrayState(tray_icon));
 
+            // Pre-populate alias_states by fetching alias membership for all configured
+            // gateways in the background. This ensures the tray icon reflects the true
+            // VPN state immediately, even before the first manual refresh or toggle.
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let state: State<'_, AppState> = app_handle.state();
+                    let settings = lock_settings(&state);
+                    let creds = state.credentials.lock().unwrap_or_else(|e| e.into_inner()).clone();
+
+                    if let Some((api_key, api_secret)) = creds {
+                        if let Ok(local_ip) = get_local_ip() {
+                            let mut states = HashMap::new();
+                            for gateway in &settings.gateways {
+                                if let Ok(enabled) = fetch_alias_enabled(
+                                    &gateway.alias_name, &local_ip, &settings,
+                                    &api_key, &api_secret, &state.client,
+                                ).await {
+                                    states.insert(gateway.alias_name.clone(), enabled);
+                                }
+                            }
+                            let any_enabled = states.values().any(|&v| v);
+                            *state.alias_states.lock().unwrap_or_else(|e| e.into_inner()) = states;
+                            update_tray_icon(&app_handle, any_enabled);
+                            write_log("Setup: alias_states pre-populated from OPNsense");
+                        }
+                    }
+                });
+            }
+
             // Minimize to tray: hide window on minimize (removes from taskbar).
             // Close button exits normally.
             if let Some(window) = app.get_webview_window("main") {
