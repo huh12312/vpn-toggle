@@ -45,7 +45,7 @@ function VpnList({ settings }: VpnListProps) {
     } finally {
       setLoading(false);
     }
-  }, [settings.gateways.length, settings.base_url]);
+  }, [settings]);
 
   useEffect(() => { refreshStatuses(); }, [refreshStatuses]);
 
