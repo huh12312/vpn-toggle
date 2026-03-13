@@ -45,7 +45,7 @@ function VpnList({ settings }: VpnListProps) {
     } finally {
       setLoading(false);
     }
-  }, [settings.gateways.length, settings.base_url, settings.api_key, settings.api_secret]);
+  }, [settings.gateways.length, settings.base_url]);
 
   useEffect(() => { refreshStatuses(); }, [refreshStatuses]);
 
@@ -87,17 +87,6 @@ function VpnList({ settings }: VpnListProps) {
     if (vpn.loss) parts.push(`loss ${vpn.loss}`);
     return parts.join("  ·  ");
   };
-
-  if (!settings.api_key || !settings.api_secret) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="text-center text-gray-600">
-          <p className="text-lg mb-2">Please configure your API credentials</p>
-          <p className="text-sm">Click the Settings button above to get started</p>
-        </div>
-      </div>
-    );
-  }
 
   if (settings.gateways.length === 0) {
     return (
