@@ -1,6 +1,17 @@
 import { useState } from "react";
 import { AppSettings, VpnGateway, Credentials } from "../App";
 
+const EyeIcon = ({ open }: { open: boolean }) =>
+  open ? (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+      <path d="M10 3C5 3 1.73 7.11 1.05 10c.68 2.89 3.95 7 8.95 7s8.27-4.11 8.95-7C18.27 7.11 15 3 10 3zm0 12a5 5 0 110-10 5 5 0 010 10zm0-8a3 3 0 100 6 3 3 0 000-6z" />
+    </svg>
+  ) : (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+      <path fillRule="evenodd" d="M3.28 2.22a.75.75 0 00-1.06 1.06l14.5 14.5a.75.75 0 101.06-1.06l-1.745-1.745a10.029 10.029 0 003.3-4.38 1.25 1.25 0 000-.9C18.267 7.11 15 3 10 3a9.958 9.958 0 00-4.512 1.074L3.28 2.22zM10 5a5 5 0 014.592 3.022L12.18 5.61A3 3 0 007.64 10.18L5.228 7.768A7.954 7.954 0 0110 5zm-5.657 4.568A7.955 7.955 0 002 10c.68 2.89 3.95 7 8 7a7.95 7.95 0 004.206-1.196l-1.515-1.516A3 3 0 016.39 9.61L4.343 9.568z" clipRule="evenodd" />
+    </svg>
+  );
+
 interface SettingsProps {
   settings: AppSettings;
   credentials: Credentials;
@@ -30,6 +41,7 @@ function Settings({ settings, credentials, onSave, onCancel }: SettingsProps) {
   const [formData, setFormData] = useState<AppSettings>(settings);
   const [formCredentials, setFormCredentials] = useState<Credentials>(credentials);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [showCredentials, setShowCredentials] = useState(false);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -102,12 +114,25 @@ function Settings({ settings, credentials, onSave, onCancel }: SettingsProps) {
             />
           </div>
 
+          <div className="flex justify-between items-center mb-1">
+            <span className="text-sm font-medium text-gray-700">API Credentials <span className="text-red-500">*</span></span>
+            <button
+              type="button"
+              onClick={() => setShowCredentials((v) => !v)}
+              className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 transition-colors"
+              aria-label={showCredentials ? "Hide credentials" : "Show credentials"}
+            >
+              <EyeIcon open={showCredentials} />
+              {showCredentials ? "Hide" : "Show"}
+            </button>
+          </div>
+
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
               API Key <span className="text-red-500">*</span>
             </label>
             <input
-              type="text"
+              type={showCredentials ? "text" : "password"}
               value={formCredentials.api_key}
               onChange={(e) =>
                 setFormCredentials({ ...formCredentials, api_key: e.target.value })
@@ -122,7 +147,7 @@ function Settings({ settings, credentials, onSave, onCancel }: SettingsProps) {
               API Secret <span className="text-red-500">*</span>
             </label>
             <input
-              type="password"
+              type={showCredentials ? "text" : "password"}
               value={formCredentials.api_secret}
               onChange={(e) =>
                 setFormCredentials({ ...formCredentials, api_secret: e.target.value })
