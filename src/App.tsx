@@ -97,6 +97,10 @@ function App() {
             credentials={credentials}
             onSave={handleSaveSettings}
             onCancel={() => setShowSettings(false)}
+            onClearCredentials={() => {
+              setCredentials(null);
+              setShowSettings(true);
+            }}
           />
         ) : (
           <VpnList settings={settings} />
