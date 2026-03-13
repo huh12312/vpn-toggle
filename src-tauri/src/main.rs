@@ -38,11 +38,20 @@ fn log_path() -> Option<std::path::PathBuf> {
     })
 }
 
+const LOG_MAX_BYTES: u64 = 1_000_000; // 1 MB — rotate when exceeded
+
 fn write_log(msg: &str) {
     use std::io::Write;
     if let Some(path) = log_path() {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
+        }
+        // Rotate: if log exceeds 1 MB, rename to app.log.1 and start fresh.
+        if let Ok(meta) = std::fs::metadata(&path) {
+            if meta.len() >= LOG_MAX_BYTES {
+                let backup = path.with_extension("log.1");
+                let _ = std::fs::rename(&path, &backup);
+            }
         }
         if let Ok(mut file) = std::fs::OpenOptions::new()
             .create(true)
