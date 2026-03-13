@@ -11,36 +11,58 @@ export interface VpnGateway {
 
 export interface AppSettings {
   base_url: string;
+  gateways: VpnGateway[];
+}
+
+export interface Credentials {
   api_key: string;
   api_secret: string;
-  gateways: VpnGateway[];
 }
 
 function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [credentials, setCredentials] = useState<Credentials | null>(null);
 
   useEffect(() => {
     loadSettings();
+    loadCredentials();
   }, []);
 
   const loadSettings = async () => {
     try {
       const settings = await invoke<AppSettings>("get_settings");
       setSettings(settings);
-      // Show settings if not configured
-      if (!settings.api_key || !settings.api_secret) {
-        setShowSettings(true);
-      }
     } catch (error) {
       console.error("Failed to load settings:", error);
     }
   };
 
-  const handleSaveSettings = async (newSettings: AppSettings) => {
+  const loadCredentials = async () => {
+    try {
+      const creds = await invoke<[string, string] | null>("load_credentials");
+      if (creds) {
+        setCredentials({ api_key: creds[0], api_secret: creds[1] });
+      } else {
+        setCredentials(null);
+        setShowSettings(true);
+      }
+    } catch (error) {
+      console.error("Failed to load credentials:", error);
+      setCredentials(null);
+      setShowSettings(true);
+    }
+  };
+
+  const handleSaveSettings = async (newSettings: AppSettings, newCredentials: Credentials) => {
     try {
       await invoke("save_settings", { settings: newSettings });
+      await invoke("save_credentials", {
+        apiKey: newCredentials.api_key,
+        apiSecret: newCredentials.api_secret
+      });
       setSettings(newSettings);
+      setCredentials(newCredentials);
       setShowSettings(false);
     } catch (error) {
       console.error("Failed to save settings:", error);
@@ -48,7 +70,7 @@ function App() {
     }
   };
 
-  if (!settings) {
+  if (!settings || credentials === null) {
     return (
       <div className="flex items-center justify-center h-screen bg-gray-100">
         <div className="text-gray-600">Loading...</div>
@@ -72,6 +94,7 @@ function App() {
         {showSettings ? (
           <Settings
             settings={settings}
+            credentials={credentials}
             onSave={handleSaveSettings}
             onCancel={() => setShowSettings(false)}
           />
