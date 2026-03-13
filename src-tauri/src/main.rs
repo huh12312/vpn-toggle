@@ -310,6 +310,13 @@ async fn fetch_gateway_info(
 
 #[tauri::command]
 async fn save_credentials(api_key: String, api_secret: String) -> Result<(), String> {
+    if api_key.trim().is_empty() {
+        return Err("API key cannot be empty".to_string());
+    }
+    if api_secret.trim().is_empty() {
+        return Err("API secret cannot be empty".to_string());
+    }
+
     let api_key_entry = Entry::new("vpn-toggle", "api_key")
         .map_err(|e| format!("Failed to create keyring entry for api_key: {}", e))?;
     let api_secret_entry = Entry::new("vpn-toggle", "api_secret")
