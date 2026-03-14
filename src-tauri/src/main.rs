@@ -651,19 +651,24 @@ fn main() {
 
                     if let Some((api_key, api_secret)) = creds {
                         if let Ok(local_ip) = get_local_ip() {
-                            let mut states = HashMap::new();
-                            for gateway in &settings.gateways {
-                                if let Ok(enabled) = fetch_alias_enabled(
-                                    &gateway.alias_name, &local_ip, &settings,
+                            // Fetch all alias states in parallel — mirrors get_all_vpn_status behavior.
+                            let alias_futures = settings.gateways.iter()
+                                .map(|gw| fetch_alias_enabled(
+                                    &gw.alias_name, &local_ip, &settings,
                                     &api_key, &api_secret, &state.client,
-                                ).await {
-                                    states.insert(gateway.alias_name.clone(), enabled);
+                                ));
+                            let alias_results = join_all(alias_futures).await;
+                            let mut states = HashMap::with_capacity(settings.gateways.len());
+                            for (gw, result) in settings.gateways.iter().zip(alias_results) {
+                                if let Ok(enabled) = result {
+                                    states.insert(gw.alias_name.clone(), enabled);
                                 }
                             }
                             let any_enabled = states.values().any(|&v| v);
                             *state.alias_states.write_safe() = states;
                             update_tray_icon(&app_handle, any_enabled);
-                            write_log("Setup: alias_states pre-populated from OPNsense");
+                            // write_log does blocking I/O — offload from async executor.
+                            tokio::task::spawn_blocking(|| write_log("Setup: alias_states pre-populated from OPNsense")).await.ok();
                         }
                     }
                 });
@@ -683,15 +688,25 @@ fn main() {
                 }
             }
 
-            // Minimize to tray: hide window on minimize (removes from taskbar).
-            // Close button exits normally.
+            // Tray behavior:
+            // - Minimize (zero-size Resized on Windows) → hide to tray, removes from taskbar.
+            //   Uses zero-size check instead of is_minimized() to avoid IPC overhead on every resize.
+            // - Close button (X) → hide to tray instead of exiting.
+            //   Use the "Quit" tray menu item to exit the app.
             if let Some(window) = app.get_webview_window("main") {
                 let window_clone = window.clone();
                 window.on_window_event(move |event| {
-                    if let tauri::WindowEvent::Resized(_) = event {
-                        if window_clone.is_minimized().unwrap_or(false) {
+                    match event {
+                        tauri::WindowEvent::Resized(size) => {
+                            if size.width == 0 && size.height == 0 {
+                                let _ = window_clone.hide();
+                            }
+                        }
+                        tauri::WindowEvent::CloseRequested { api, .. } => {
+                            api.prevent_close();
                             let _ = window_clone.hide();
                         }
+                        _ => {}
                     }
                 });
             }
