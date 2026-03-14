@@ -1,4 +1,4 @@
-# VPN Toggle
+# OPNsense FW Alias Toggle
 
 A Tauri 2.0 desktop application that controls per-device gateway routing on **OPNsense** by adding or removing your machine's IP address from a firewall alias. This is an OPNsense-specific tool — it uses the OPNsense API directly and will not work with other routers or firewalls.
 
