@@ -1,81 +1,83 @@
 # VPN Toggle
 
-A Tauri 2.0 desktop application for toggling VPN gateways on OPNsense routers via API.
+A Tauri 2.0 desktop application that controls per-device gateway routing on **OPNsense** by adding or removing your machine's IP address from a firewall alias. This is an OPNsense-specific tool — it uses the OPNsense API directly and will not work with other routers or firewalls.
+
+## What It Actually Does
+
+At its core, this app manages one thing: **your device's presence in an OPNsense firewall alias**.
+
+OPNsense lets you create firewall rules that route traffic differently based on alias membership. This app makes it easy to add or remove your current device's local IPv4 address from those aliases — toggling which gateway your traffic uses without touching the OPNsense UI.
+
+**Common use cases:**
+- Route your device through a VPN gateway (WireGuard, OpenVPN, etc.)
+- Move a device off VPN and back to a standard WAN connection
+- Switch between multiple gateways (e.g., VPN A vs. VPN B vs. direct WAN)
+- Quickly isolate a device to a specific network segment or gateway policy
+
+**What the toggle does:**
+- **ON**: Adds this device's local IP to the firewall alias → traffic routes per your firewall rules
+- **OFF**: Removes this device's local IP from the alias → traffic routes normally (default gateway)
+
+The local IP is detected automatically at runtime — no manual entry required.
+
+## Gateway Status Indicator
+
+Separately from the toggle, each configured gateway shows a live status indicator:
+- 🟢 **Green** — gateway is online (via `/api/routes/gateway/status`)
+- 🟡 **Yellow** — gateway is down
+- 🔴 **Red** — error reaching OPNsense API
+
+The toggle is disabled when the gateway is offline, preventing you from routing traffic to a dead gateway.
 
 ## Features
 
-- **System Tray App**: Lives in the system tray, closing the window hides to tray
-- **OPNsense Integration**: Toggle VPN gateways via OPNsense API
-- **Multiple Gateways**: Manage multiple VPN gateways from a single interface
-- **Real-time Status**: See connection status with visual indicators
-- **Persistent Settings**: API credentials and gateway configurations are saved locally
+- **System tray**: Minimizes to tray on close, always accessible
+- **Multiple gateways**: Configure as many gateway/alias pairs as you need
+- **Persistent settings**: API credentials and gateway config saved locally
+- **Auto IP detection**: Detects your current local IPv4, no manual config needed
 
-## Prerequisites
+## OPNsense Requirements
 
-- Node.js (v18 or later)
-- Rust (latest stable)
-- Tauri CLI
+- OPNsense router with API access enabled
+- An API key/secret pair (System → Access → Users → your user → API Keys)
+- One or more **firewall aliases** with associated routing rules already configured in OPNsense
+  - The alias type should be `Host(s)` to hold IP addresses
+  - Your firewall/NAT rules must already be set up to route alias members through the desired gateway
 
-## Development
-
-1. Install dependencies:
-   ```bash
-   npm install
-   ```
-
-2. Run in development mode:
-   ```bash
-   npm run tauri dev
-   ```
-
-## Building
-
-Build the application:
-```bash
-npm run tauri build
-```
-
-The built executable will be in `src-tauri/target/release/`.
-
-## OPNsense Setup
-
-1. Log into your OPNsense router
-2. Navigate to System > Access > Users
-3. Create an API key/secret pair
-4. Ensure you have firewall aliases configured for your VPN gateways
-5. Use the alias names in the app's gateway configuration
+> **Note:** This app manipulates alias membership only. The firewall rules that act on those aliases must exist in OPNsense before the toggle will have any effect.
 
 ## Configuration
 
-1. Open the app and click "Settings"
-2. Enter your OPNsense base URL (e.g., `https://10.0.0.1:444`)
-3. Enter your API Key and API Secret
-4. Add VPN gateways with:
-   - **Display Name**: Human-readable label shown in the UI
-   - **Gateway Name**: The OPNsense gateway name used for status checks (e.g. `WAN_VPN`)
-   - **Alias Name**: The firewall alias used to route this device through VPN (e.g. `vpn_devices`)
+1. Open the app and click **Settings**
+2. Enter your OPNsense base URL (e.g., `https://192.168.1.1`)
+3. Enter your **API Key** and **API Secret**
+4. Add one or more gateways:
+   - **Display Name** — label shown in the UI (e.g., `Mullvad VPN`)
+   - **Gateway Name** — OPNsense gateway name for status checks (e.g., `WAN_WIREGUARD`)
+   - **Alias Name** — firewall alias this device's IP is added to/removed from (e.g., `vpn_devices`)
 
-## How It Works
+> TLS certificate verification is disabled to support self-signed OPNsense certs.
 
-The app has two separate concerns:
+## Installation
 
-**Gateway Status** (green/yellow/red indicator):
-- Checks the actual OPNsense gateway status via `/api/routes/gateway/status`
-- Green = gateway online, Yellow = gateway down, Red = error
+Download the latest `.exe` installer from the [Releases](../../releases) page and run it. Windows only.
 
-**VPN Toggle** (on/off switch):
-- Adds or removes the device's local IPv4 address from a firewall alias
-- Toggle ON: adds this device's IP to the alias → traffic routes through VPN
-- Toggle OFF: removes this device's IP from the alias → traffic routes normally
-- The toggle is disabled when the gateway is offline
-- The local IP is detected automatically at runtime
+## Development
+
+**Prerequisites:** Node.js v18+, Rust (stable), Tauri CLI
+
+```bash
+npm install
+npm run tauri dev   # dev mode
+npm run tauri build # production build
+```
 
 ## Tech Stack
 
 - **Frontend**: React + TypeScript + Tailwind CSS
 - **Backend**: Rust (Tauri 2.0)
 - **Bundler**: Vite
-- **HTTP Client**: reqwest (with TLS cert verification disabled for self-signed certs)
+- **HTTP**: reqwest (TLS verification disabled for self-signed certs)
 
 ## License
 
