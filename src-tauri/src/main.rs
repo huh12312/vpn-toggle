@@ -302,8 +302,9 @@ async fn fetch_all_gateway_statuses(
 }
 
 /// Look up a single gateway by name from a pre-fetched items list.
-/// Used by get_all_vpn_status to avoid N HTTP requests for N gateways.
-async fn lookup_gateway_info(
+/// Pure synchronous lookup — no I/O. Gateway list is fetched once per cycle
+/// by fetch_all_gateway_statuses and shared across all gateways.
+fn lookup_gateway_info(
     gateway_name: &str,
     items_result: &Result<Vec<serde_json::Value>, String>,
 ) -> Result<GatewayInfo, String> {
@@ -331,20 +332,6 @@ async fn lookup_gateway_info(
     let msg = format!("Gateway '{}' not found. Available: [{}]", gateway_name, names.join(", "));
     write_log(&msg);
     Err(msg)
-}
-
-/// Check OPNsense gateway status via the routes API (single gateway lookup).
-/// Used by the startup background task — prefer fetch_all_gateway_statuses +
-/// lookup_gateway_info when checking multiple gateways at once.
-async fn fetch_gateway_info(
-    gateway_name: &str,
-    settings: &Settings,
-    api_key: &str,
-    api_secret: &str,
-    client: &reqwest::Client,
-) -> Result<GatewayInfo, String> {
-    let items = fetch_all_gateway_statuses(settings, api_key, api_secret, client).await;
-    lookup_gateway_info(gateway_name, &items).await
 }
 
 // ── Tauri commands ────────────────────────────────────────────────────────────
@@ -436,6 +423,7 @@ async fn toggle_vpn(
         .ok_or_else(|| "API credentials not configured".to_string())?;
 
     let local_ip = get_local_ip()?;
+    let auth = auth_header(&api_key, &api_secret);
     let endpoint = if enable { "add" } else { "delete" };
     let url = format!("{}/api/firewall/alias_util/{}/{}", settings.base_url, endpoint, alias_name);
 
@@ -444,7 +432,7 @@ async fn toggle_vpn(
 
     let response = state.client
         .post(&url)
-        .header("Authorization", auth_header(&api_key, &api_secret))
+        .header("Authorization", auth.clone())
         .json(&body)
         .send()
         .await
@@ -463,7 +451,7 @@ async fn toggle_vpn(
     let reconfigure_url = format!("{}/api/firewall/alias/reconfigure", settings.base_url);
     let reconfigure_response = state.client
         .post(&reconfigure_url)
-        .header("Authorization", auth_header(&api_key, &api_secret))
+        .header("Authorization", auth)
         .header("Content-Length", "0")
         .body("")
         .send()
@@ -511,10 +499,10 @@ async fn get_all_vpn_status(app: AppHandle, state: State<'_, AppState>) -> Resul
     let mut statuses = Vec::new();
 
     for gateway in &settings.gateways {
-        let (enabled_result, gw_result) = tokio::join!(
-            fetch_alias_enabled(&gateway.alias_name, &local_ip, &settings, &api_key, &api_secret, client),
-            lookup_gateway_info(&gateway.gateway_name, &gateway_status_list)
-        );
+        // gateway_status_list is already fetched — lookup is a pure sync call.
+        // fetch_alias_enabled is the only I/O per gateway; no join needed.
+        let gw_result = lookup_gateway_info(&gateway.gateway_name, &gateway_status_list);
+        let enabled_result = fetch_alias_enabled(&gateway.alias_name, &local_ip, &settings, &api_key, &api_secret, client).await;
 
         let enabled = enabled_result.as_ref().copied().unwrap_or(false);
         let (online, gw_status, rtt, rttd, loss) = match &gw_result {

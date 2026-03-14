@@ -23,7 +23,7 @@ const AUTO_REFRESH_MS = 30_000;
 
 function VpnList({ settings }: VpnListProps) {
   const [vpnStatuses, setVpnStatuses] = useState<VpnStatus[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true); // true on mount — fetch fires immediately
   const [toggling, setToggling] = useState<string | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
