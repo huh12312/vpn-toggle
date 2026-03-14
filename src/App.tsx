@@ -22,7 +22,8 @@ export interface Credentials {
 function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [credentials, setCredentials] = useState<Credentials | null>(null);
+  // undefined = not yet fetched; null = fetched but none stored; Credentials = loaded
+  const [credentials, setCredentials] = useState<Credentials | null | undefined>(undefined);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -83,7 +84,8 @@ function App() {
     );
   }
 
-  if (!settings || credentials === null) {
+  // undefined = still loading; null = loaded but no credentials (Settings will show)
+  if (!settings || credentials === undefined) {
     return (
       <div className="flex items-center justify-center h-screen bg-gray-100">
         <div className="text-gray-600">Loading...</div>
@@ -115,7 +117,7 @@ function App() {
         {showSettings ? (
           <Settings
             settings={settings}
-            credentials={credentials}
+            credentials={credentials ?? { api_key: "", api_secret: "" }}
             onSave={handleSaveSettings}
             onCancel={() => setShowSettings(false)}
             onClearCredentials={() => {
