@@ -133,6 +133,22 @@ struct VpnStatus {
     error: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+struct GatewayItem {
+    name: String,
+    status: String,
+    #[serde(rename = "delay")]
+    rtt: Option<String>,
+    #[serde(rename = "stddev")]
+    rttd: Option<String>,
+    loss: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GatewayStatusResponse {
+    items: Vec<GatewayItem>,
+}
+
 // ── App state ────────────────────────────────────────────────────────────────
 
 struct AppState {
@@ -282,7 +298,7 @@ async fn fetch_all_gateway_statuses(
     api_key: &str,
     api_secret: &str,
     client: &reqwest::Client,
-) -> Result<Vec<serde_json::Value>, String> {
+) -> Result<Vec<GatewayItem>, String> {
     if api_key.is_empty() || api_secret.is_empty() {
         return Err("API credentials not configured".to_string());
     }
@@ -305,13 +321,9 @@ async fn fetch_all_gateway_statuses(
         return Err(format!("Gateway status API error ({}): {}", http_status, text));
     }
 
-    let json: serde_json::Value = response.json().await
+    let resp: GatewayStatusResponse = response.json().await
         .map_err(|e| format!("Failed to parse gateway status response: {}", e))?;
-
-    json.get("items")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .ok_or_else(|| "Unexpected gateway status response format".to_string())
+    Ok(resp.items)
 }
 
 /// Look up a single gateway by name from a pre-fetched items list.
@@ -319,29 +331,26 @@ async fn fetch_all_gateway_statuses(
 /// by fetch_all_gateway_statuses and shared across all gateways.
 fn lookup_gateway_info(
     gateway_name: &str,
-    items_result: &Result<Vec<serde_json::Value>, String>,
+    items_result: &Result<Vec<GatewayItem>, String>,
 ) -> Result<GatewayInfo, String> {
     let items = items_result.as_ref().map_err(|e| e.clone())?;
-
     for item in items {
-        if item.get("name").and_then(|v| v.as_str()) == Some(gateway_name) {
-            let gw_status = item.get("status").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-            let is_online = !matches!(gw_status.as_str(), "offline" | "down" | "force_down");
-            let rtt  = item.get("delay").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let rttd = item.get("stddev").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let loss = item.get("loss").and_then(|v| v.as_str()).map(|s| s.to_string());
-            // Only log non-healthy states to avoid flooding the log on every 30s poll
-            if !is_online || gw_status == "latency" {
+        if item.name == gateway_name {
+            let is_online = !matches!(item.status.as_str(), "offline" | "down" | "force_down");
+            if !is_online || item.status == "latency" {
                 write_log(&format!("Gateway '{}' status='{}' online={} rtt={:?} loss={:?}",
-                    gateway_name, gw_status, is_online, rtt, loss));
+                    gateway_name, item.status, is_online, item.rtt, item.loss));
             }
-            return Ok(GatewayInfo { online: is_online, status: gw_status, rtt, rttd, loss });
+            return Ok(GatewayInfo {
+                online: is_online,
+                status: item.status.clone(),
+                rtt: item.rtt.clone(),
+                rttd: item.rttd.clone(),
+                loss: item.loss.clone(),
+            });
         }
     }
-
-    let names: Vec<&str> = items.iter()
-        .filter_map(|i| i.get("name").and_then(|v| v.as_str()))
-        .collect();
+    let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
     let msg = format!("Gateway '{}' not found. Available: [{}]", gateway_name, names.join(", "));
     write_log(&msg);
     Err(msg)
@@ -437,7 +446,7 @@ async fn toggle_vpn(
     let local_ip = get_local_ip()?;
     let auth = auth_header(&api_key, &api_secret);
     let endpoint = if enable { "add" } else { "delete" };
-    let url = format!("{}/api/firewall/alias_util/{}/{}", settings.base_url, endpoint, alias_name);
+    let url = format!("{}/api/firewall/alias_util/{}/{}", settings.base_url, endpoint, &alias_name);
 
     let mut body = HashMap::new();
     body.insert("address", local_ip.as_str());
@@ -482,7 +491,7 @@ async fn toggle_vpn(
     // This prevents a false red icon when disabling one gateway while another is still active.
     let any_enabled = {
         let mut states = state.alias_states.write_safe();
-        states.insert(alias_name.clone(), enable);
+        states.insert(alias_name, enable);
         states.values().any(|&v| v)
     };
     update_tray_icon(&app, any_enabled);
