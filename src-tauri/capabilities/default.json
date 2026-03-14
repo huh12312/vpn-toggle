@@ -1,0 +1,10 @@
+{
+  "$schema": "../../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for VPN Toggle — grants the main window access to core APIs and custom Tauri commands",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "store:default"
+  ]
+}

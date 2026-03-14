@@ -30,6 +30,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "VPN Toggle",
         "width": 500,
         "height": 600,
