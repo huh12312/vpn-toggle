@@ -6,7 +6,7 @@ use keyring::Entry;
 use local_ip_address::local_ip;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::RwLock;
 use std::time::Duration;
 use tauri::{AppHandle, Manager, State};
 use tauri::menu::{Menu, MenuItem};
@@ -17,6 +17,22 @@ use tauri_plugin_store::StoreExt;
 
 const TRAY_ICON_ON:  &[u8] = include_bytes!("../icons/tray-on-32.png");
 const TRAY_ICON_OFF: &[u8] = include_bytes!("../icons/tray-off-32.png");
+
+// ── RwLock helper trait ──────────────────────────────────────────────────────
+
+trait RwLockExt<T> {
+    fn read_safe(&self) -> std::sync::RwLockReadGuard<'_, T>;
+    fn write_safe(&self) -> std::sync::RwLockWriteGuard<'_, T>;
+}
+
+impl<T> RwLockExt<T> for std::sync::RwLock<T> {
+    fn read_safe(&self) -> std::sync::RwLockReadGuard<'_, T> {
+        self.read().unwrap_or_else(|e| e.into_inner())
+    }
+    fn write_safe(&self) -> std::sync::RwLockWriteGuard<'_, T> {
+        self.write().unwrap_or_else(|e| e.into_inner())
+    }
+}
 
 struct TrayState(tauri::tray::TrayIcon);
 
@@ -120,15 +136,15 @@ struct VpnStatus {
 // ── App state ────────────────────────────────────────────────────────────────
 
 struct AppState {
-    settings: Mutex<Settings>,
+    settings: RwLock<Settings>,
     client: reqwest::Client,
     /// Cached credentials loaded from OS keyring at startup.
     /// Updated on save_credentials / cleared on delete_credentials.
     /// Avoids hitting the keyring on every API call (important on Linux).
-    credentials: Mutex<Option<(String, String)>>,
+    credentials: RwLock<Option<(String, String)>>,
     /// Last known enabled state per alias — used for accurate aggregate tray icon
     /// when a single gateway is toggled.
-    alias_states: Mutex<HashMap<String, bool>>,
+    alias_states: RwLock<HashMap<String, bool>>,
 }
 
 fn make_client() -> reqwest::Client {
@@ -144,10 +160,7 @@ fn make_client() -> reqwest::Client {
 
 /// Lock the settings mutex, recovering from poisoning.
 fn lock_settings(state: &State<'_, AppState>) -> Settings {
-    state.settings
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
+    state.settings.read_safe().clone()
 }
 
 /// Load credentials from OS keyring. Returns None if either credential is missing.
@@ -360,14 +373,14 @@ async fn save_credentials(
         .map_err(|e| format!("Failed to save api_secret to keyring: {}", e))?;
 
     // Update in-memory cache so subsequent API calls don't re-hit the keyring.
-    *state.credentials.lock().unwrap_or_else(|e| e.into_inner()) = Some((api_key, api_secret));
+    *state.credentials.write_safe() = Some((api_key, api_secret));
 
     Ok(())
 }
 
 #[tauri::command]
 async fn load_credentials(state: State<'_, AppState>) -> Result<Option<(String, String)>, String> {
-    Ok(state.credentials.lock().unwrap_or_else(|e| e.into_inner()).clone())
+    Ok(state.credentials.read_safe().clone())
 }
 
 #[tauri::command]
@@ -382,7 +395,7 @@ async fn delete_credentials(state: State<'_, AppState>) -> Result<(), String> {
     let _ = api_secret_entry.delete_credential();
 
     // Clear in-memory cache.
-    *state.credentials.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *state.credentials.write_safe() = None;
 
     Ok(())
 }
@@ -403,7 +416,7 @@ async fn save_settings(
         ..settings
     };
     persist_settings(&app, &normalized)?;
-    *state.settings.lock().unwrap_or_else(|e| e.into_inner()) = normalized;
+    *state.settings.write_safe() = normalized;
     Ok(())
 }
 
@@ -417,8 +430,7 @@ async fn toggle_vpn(
     let settings = lock_settings(&state);
 
     let (api_key, api_secret) = state.credentials
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .read_safe()
         .clone()
         .ok_or_else(|| "API credentials not configured".to_string())?;
 
@@ -469,7 +481,7 @@ async fn toggle_vpn(
     // Update alias state cache and compute accurate aggregate for tray icon.
     // This prevents a false red icon when disabling one gateway while another is still active.
     let any_enabled = {
-        let mut states = state.alias_states.lock().unwrap_or_else(|e| e.into_inner());
+        let mut states = state.alias_states.write_safe();
         states.insert(alias_name.clone(), enable);
         states.values().any(|&v| v)
     };
@@ -484,8 +496,7 @@ async fn get_all_vpn_status(app: AppHandle, state: State<'_, AppState>) -> Resul
     let client = &state.client;
 
     let (api_key, api_secret) = state.credentials
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .read_safe()
         .clone()
         .ok_or_else(|| "API credentials not configured".to_string())?;
 
@@ -533,7 +544,7 @@ async fn get_all_vpn_status(app: AppHandle, state: State<'_, AppState>) -> Resul
 
     // Refresh alias state cache and sync tray icon.
     {
-        let mut states = state.alias_states.lock().unwrap_or_else(|e| e.into_inner());
+        let mut states = state.alias_states.write_safe();
         for s in &statuses {
             states.insert(s.alias_name.clone(), s.enabled);
         }
@@ -562,10 +573,10 @@ fn main() {
                 write_log("Setup: no credentials found in keyring");
             }
             app.manage(AppState {
-                settings: Mutex::new(settings),
+                settings: RwLock::new(settings.clone()),
                 client: make_client(),
-                credentials: Mutex::new(cached_credentials),
-                alias_states: Mutex::new(HashMap::new()),
+                credentials: RwLock::new(cached_credentials),
+                alias_states: RwLock::new(HashMap::with_capacity(settings.gateways.len())),
             });
 
             let show_item = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
@@ -611,7 +622,7 @@ fn main() {
                 tauri::async_runtime::spawn(async move {
                     let state: State<'_, AppState> = app_handle.state();
                     let settings = lock_settings(&state);
-                    let creds = state.credentials.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    let creds = state.credentials.read_safe().clone();
 
                     if let Some((api_key, api_secret)) = creds {
                         if let Ok(local_ip) = get_local_ip() {
@@ -625,7 +636,7 @@ fn main() {
                                 }
                             }
                             let any_enabled = states.values().any(|&v| v);
-                            *state.alias_states.lock().unwrap_or_else(|e| e.into_inner()) = states;
+                            *state.alias_states.write_safe() = states;
                             update_tray_icon(&app_handle, any_enabled);
                             write_log("Setup: alias_states pre-populated from OPNsense");
                         }
@@ -637,7 +648,7 @@ fn main() {
             // so the user can configure the app. Otherwise stay hidden in tray.
             {
                 let has_credentials = app.state::<AppState>()
-                    .credentials.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+                    .credentials.read_safe().is_some();
                 if !has_credentials {
                     if let Some(window) = app.get_webview_window("main") {
                         let _ = window.show();
