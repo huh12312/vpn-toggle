@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use base64::{Engine as _, engine::general_purpose};
+use futures::future::join_all;
 use keyring::Entry;
 use local_ip_address::local_ip;
 use serde::{Deserialize, Serialize};
@@ -376,14 +377,16 @@ async fn save_credentials(
     let api_secret_entry = Entry::new("vpn-toggle", "api_secret")
         .map_err(|e| format!("Failed to create keyring entry for api_secret: {}", e))?;
 
-    api_key_entry.set_password(&api_key)
-        .map_err(|e| format!("Failed to save api_key to keyring: {}", e))?;
+    // Save api_secret first — if api_key save fails, roll back api_secret
     api_secret_entry.set_password(&api_secret)
         .map_err(|e| format!("Failed to save api_secret to keyring: {}", e))?;
+    api_key_entry.set_password(&api_key)
+        .map_err(|e| {
+            let _ = api_secret_entry.delete_credential();
+            format!("Failed to save api_key to keyring: {}", e)
+        })?;
 
-    // Update in-memory cache so subsequent API calls don't re-hit the keyring.
     *state.credentials.write_safe() = Some((api_key, api_secret));
-
     Ok(())
 }
 
@@ -394,18 +397,16 @@ async fn load_credentials(state: State<'_, AppState>) -> Result<Option<(String, 
 
 #[tauri::command]
 async fn delete_credentials(state: State<'_, AppState>) -> Result<(), String> {
+    // Clear cache first — honour user intent regardless of keyring state
+    *state.credentials.write_safe() = None;
+
     let api_key_entry = Entry::new("vpn-toggle", "api_key")
         .map_err(|e| format!("Failed to create keyring entry for api_key: {}", e))?;
     let api_secret_entry = Entry::new("vpn-toggle", "api_secret")
         .map_err(|e| format!("Failed to create keyring entry for api_secret: {}", e))?;
 
-    // Ignore errors if credentials don't already exist
     let _ = api_key_entry.delete_credential();
     let _ = api_secret_entry.delete_credential();
-
-    // Clear in-memory cache.
-    *state.credentials.write_safe() = None;
-
     Ok(())
 }
 
@@ -512,31 +513,33 @@ async fn get_all_vpn_status(app: AppHandle, state: State<'_, AppState>) -> Resul
     // Resolve local IP once — reused for all alias checks this cycle.
     let local_ip = get_local_ip()?;
 
-    // Fetch the full gateway status list once — shared across all gateway lookups.
-    // Avoids N identical HTTP requests to /api/routes/gateway/status for N gateways.
+    // Fetch gateway status list once (1 HTTP request)
     let gateway_status_list = fetch_all_gateway_statuses(&settings, &api_key, &api_secret, client).await;
 
-    let mut statuses = Vec::new();
+    // Look up all gateway statuses synchronously (no I/O)
+    let gw_results: Vec<Result<GatewayInfo, String>> = settings.gateways.iter()
+        .map(|gw| lookup_gateway_info(&gw.gateway_name, &gateway_status_list))
+        .collect();
 
-    for gateway in &settings.gateways {
-        // gateway_status_list is already fetched — lookup is a pure sync call.
-        // fetch_alias_enabled is the only I/O per gateway; no join needed.
-        let gw_result = lookup_gateway_info(&gateway.gateway_name, &gateway_status_list);
-        let enabled_result = fetch_alias_enabled(&gateway.alias_name, &local_ip, &settings, &api_key, &api_secret, client).await;
+    // Fetch all alias states in parallel (N HTTP requests → max(latencies) not sum)
+    let alias_futures = settings.gateways.iter()
+        .map(|gw| fetch_alias_enabled(&gw.alias_name, &local_ip, &settings, &api_key, &api_secret, client));
+    let alias_results = join_all(alias_futures).await;
 
+    // Build status vec
+    let mut statuses = Vec::with_capacity(settings.gateways.len());
+    for ((gateway, gw_result), enabled_result) in settings.gateways.iter().zip(gw_results).zip(alias_results) {
         let enabled = enabled_result.as_ref().copied().unwrap_or(false);
         let (online, gw_status, rtt, rttd, loss) = match &gw_result {
             Ok(info) => (info.online, info.status.clone(), info.rtt.clone(), info.rttd.clone(), info.loss.clone()),
             Err(_)   => (false, "unknown".to_string(), None, None, None),
         };
-
         let error = match (enabled_result.err(), gw_result.err()) {
             (None, None) => None,
             (Some(e), None) => Some(format!("Alias: {}", e)),
             (None, Some(e)) => Some(format!("Gateway: {}", e)),
             (Some(e1), Some(e2)) => Some(format!("Alias: {} | Gateway: {}", e1, e2)),
         };
-
         statuses.push(VpnStatus {
             gateway_name: gateway.gateway_name.clone(),
             alias_name: gateway.alias_name.clone(),
