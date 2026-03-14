@@ -425,7 +425,13 @@ async fn save_settings(
         base_url: normalize_url(&settings.base_url),
         ..settings
     };
-    persist_settings(&app, &normalized)?;
+    // Persist to disk on a blocking thread — store.save() is synchronous I/O
+    let app_clone = app.clone();
+    let to_save = normalized.clone();
+    tokio::task::spawn_blocking(move || persist_settings(&app_clone, &to_save))
+        .await
+        .map_err(|e| format!("Settings save task panicked: {}", e))??;
+    // Update in-memory state only after successful persist
     *state.settings.write_safe() = normalized;
     Ok(())
 }
@@ -575,6 +581,13 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            // Second instance launched — focus the existing window
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .setup(|app| {
             write_log("Setup: loading settings");
             let settings = load_settings_from_store(app.handle());
