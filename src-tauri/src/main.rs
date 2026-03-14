@@ -262,14 +262,14 @@ struct GatewayInfo {
     loss: Option<String>,
 }
 
-/// Check OPNsense gateway status via the routes API.
-async fn fetch_gateway_info(
-    gateway_name: &str,
+/// Fetch the raw gateway status JSON from OPNsense once.
+/// Returns the parsed "items" array, or an error string.
+async fn fetch_all_gateway_statuses(
     settings: &Settings,
     api_key: &str,
     api_secret: &str,
     client: &reqwest::Client,
-) -> Result<GatewayInfo, String> {
+) -> Result<Vec<serde_json::Value>, String> {
     if api_key.is_empty() || api_secret.is_empty() {
         return Err("API credentials not configured".to_string());
     }
@@ -295,28 +295,56 @@ async fn fetch_gateway_info(
     let json: serde_json::Value = response.json().await
         .map_err(|e| format!("Failed to parse gateway status response: {}", e))?;
 
-    if let Some(items) = json.get("items").and_then(|v| v.as_array()) {
-        for item in items {
-            if item.get("name").and_then(|v| v.as_str()) == Some(gateway_name) {
-                let gw_status = item.get("status").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-                let is_online = !matches!(gw_status.as_str(), "offline" | "down" | "force_down");
-                let rtt  = item.get("delay").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let rttd = item.get("stddev").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let loss = item.get("loss").and_then(|v| v.as_str()).map(|s| s.to_string());
+    json.get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .ok_or_else(|| "Unexpected gateway status response format".to_string())
+}
+
+/// Look up a single gateway by name from a pre-fetched items list.
+/// Used by get_all_vpn_status to avoid N HTTP requests for N gateways.
+async fn lookup_gateway_info(
+    gateway_name: &str,
+    items_result: &Result<Vec<serde_json::Value>, String>,
+) -> Result<GatewayInfo, String> {
+    let items = items_result.as_ref().map_err(|e| e.clone())?;
+
+    for item in items {
+        if item.get("name").and_then(|v| v.as_str()) == Some(gateway_name) {
+            let gw_status = item.get("status").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+            let is_online = !matches!(gw_status.as_str(), "offline" | "down" | "force_down");
+            let rtt  = item.get("delay").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let rttd = item.get("stddev").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let loss = item.get("loss").and_then(|v| v.as_str()).map(|s| s.to_string());
+            // Only log non-healthy states to avoid flooding the log on every 30s poll
+            if !is_online || gw_status == "latency" {
                 write_log(&format!("Gateway '{}' status='{}' online={} rtt={:?} loss={:?}",
                     gateway_name, gw_status, is_online, rtt, loss));
-                return Ok(GatewayInfo { online: is_online, status: gw_status, rtt, rttd, loss });
             }
+            return Ok(GatewayInfo { online: is_online, status: gw_status, rtt, rttd, loss });
         }
-        let names: Vec<&str> = items.iter()
-            .filter_map(|i| i.get("name").and_then(|v| v.as_str()))
-            .collect();
-        let msg = format!("Gateway '{}' not found. Available: [{}]", gateway_name, names.join(", "));
-        write_log(&msg);
-        return Err(msg);
     }
 
-    Err("Unexpected gateway status response format".to_string())
+    let names: Vec<&str> = items.iter()
+        .filter_map(|i| i.get("name").and_then(|v| v.as_str()))
+        .collect();
+    let msg = format!("Gateway '{}' not found. Available: [{}]", gateway_name, names.join(", "));
+    write_log(&msg);
+    Err(msg)
+}
+
+/// Check OPNsense gateway status via the routes API (single gateway lookup).
+/// Used by the startup background task — prefer fetch_all_gateway_statuses +
+/// lookup_gateway_info when checking multiple gateways at once.
+async fn fetch_gateway_info(
+    gateway_name: &str,
+    settings: &Settings,
+    api_key: &str,
+    api_secret: &str,
+    client: &reqwest::Client,
+) -> Result<GatewayInfo, String> {
+    let items = fetch_all_gateway_statuses(settings, api_key, api_secret, client).await;
+    lookup_gateway_info(gateway_name, &items).await
 }
 
 // ── Tauri commands ────────────────────────────────────────────────────────────
@@ -476,12 +504,16 @@ async fn get_all_vpn_status(app: AppHandle, state: State<'_, AppState>) -> Resul
     // Resolve local IP once — reused for all alias checks this cycle.
     let local_ip = get_local_ip()?;
 
+    // Fetch the full gateway status list once — shared across all gateway lookups.
+    // Avoids N identical HTTP requests to /api/routes/gateway/status for N gateways.
+    let gateway_status_list = fetch_all_gateway_statuses(&settings, &api_key, &api_secret, client).await;
+
     let mut statuses = Vec::new();
 
     for gateway in &settings.gateways {
         let (enabled_result, gw_result) = tokio::join!(
             fetch_alias_enabled(&gateway.alias_name, &local_ip, &settings, &api_key, &api_secret, client),
-            fetch_gateway_info(&gateway.gateway_name, &settings, &api_key, &api_secret, client)
+            lookup_gateway_info(&gateway.gateway_name, &gateway_status_list)
         );
 
         let enabled = enabled_result.as_ref().copied().unwrap_or(false);

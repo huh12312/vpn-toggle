@@ -109,8 +109,9 @@ function Settings({ settings, credentials, onSave, onCancel, onClearCredentials 
       )}
 
       {clearError && (
-        <div className="mb-4 bg-red-50 border border-red-300 text-red-700 rounded p-3 text-sm">
-          Failed to clear credentials: {clearError}
+        <div className="mb-4 bg-red-50 border border-red-300 text-red-700 rounded p-3 text-sm flex justify-between items-start">
+          <span>Failed to clear credentials: {clearError}</span>
+          <button onClick={() => setClearError(null)} className="ml-3 text-red-500 hover:text-red-700 font-bold leading-none">×</button>
         </div>
       )}
 
