@@ -146,7 +146,7 @@ function VpnList({ settings }: VpnListProps) {
 
                 <button
                   onClick={() => handleToggle(vpn.alias_name, vpn.enabled)}
-                  disabled={toggling === vpn.alias_name || !!vpn.error || !vpn.online}
+                  disabled={toggling === vpn.alias_name || !!vpn.error || (!vpn.online && !vpn.enabled)}
                   className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed ${
                     vpn.enabled ? "bg-blue-600" : "bg-gray-300"
                   }`}
