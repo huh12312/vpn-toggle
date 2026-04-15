@@ -1,6 +1,6 @@
 [package]
 name = "vpn-toggle"
-version = "1.1.19"
+version = "1.1.20"
 description = "VPN Toggle for OPNsense"
 authors = ["you"]
 edition = "2021"
