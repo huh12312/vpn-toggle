@@ -377,14 +377,43 @@ async fn save_credentials(
     let api_secret_entry = Entry::new("vpn-toggle", "api_secret")
         .map_err(|e| format!("Failed to create keyring entry for api_secret: {}", e))?;
 
-    // Save api_secret first — if api_key save fails, roll back api_secret
+    // Read existing values before overwriting so we can restore them if the second write fails.
+    let old_api_secret = api_secret_entry.get_password().ok();
+    let old_api_key = api_key_entry.get_password().ok();
+
     api_secret_entry.set_password(&api_secret)
-        .map_err(|e| format!("Failed to save api_secret to keyring: {}", e))?;
+        .map_err(|e| {
+            write_log(&format!("Keyring: failed to write api_secret: {}", e));
+            format!("Failed to save api_secret to keyring: {}", e)
+        })?;
+
     api_key_entry.set_password(&api_key)
         .map_err(|e| {
-            let _ = api_secret_entry.delete_credential();
+            write_log(&format!("Keyring: failed to write api_key, restoring previous state: {}", e));
+            // Restore api_secret to its previous state rather than deleting it.
+            match &old_api_secret {
+                Some(old) => { let _ = api_secret_entry.set_password(old); }
+                None      => { let _ = api_secret_entry.delete_credential(); }
+            }
             format!("Failed to save api_key to keyring: {}", e)
         })?;
+
+    // Verify both values round-trip correctly to catch silent keyring failures.
+    let saved_key = api_key_entry.get_password().ok();
+    let saved_secret = api_secret_entry.get_password().ok();
+    if saved_key.as_deref() != Some(&api_key) || saved_secret.as_deref() != Some(&api_secret) {
+        write_log("Keyring: post-save verification failed — restoring previous credentials");
+        // Restore previous state
+        match &old_api_key {
+            Some(old) => { let _ = api_key_entry.set_password(old); }
+            None      => { let _ = api_key_entry.delete_credential(); }
+        }
+        match &old_api_secret {
+            Some(old) => { let _ = api_secret_entry.set_password(old); }
+            None      => { let _ = api_secret_entry.delete_credential(); }
+        }
+        return Err("Credentials could not be verified after saving. Please try again.".to_string());
+    }
 
     *state.credentials.write_safe() = Some((api_key, api_secret));
     Ok(())
@@ -397,13 +426,15 @@ async fn load_credentials(state: State<'_, AppState>) -> Result<Option<(String, 
 
 #[tauri::command]
 async fn delete_credentials(state: State<'_, AppState>) -> Result<(), String> {
-    // Clear cache first — honour user intent regardless of keyring state
-    *state.credentials.write_safe() = None;
-
+    // Create entries before clearing cache — if Entry::new fails we return early
+    // without having already wiped the in-memory credentials.
     let api_key_entry = Entry::new("vpn-toggle", "api_key")
         .map_err(|e| format!("Failed to create keyring entry for api_key: {}", e))?;
     let api_secret_entry = Entry::new("vpn-toggle", "api_secret")
         .map_err(|e| format!("Failed to create keyring entry for api_secret: {}", e))?;
+
+    // Clear in-memory cache only after we know we can proceed with keyring ops.
+    *state.credentials.write_safe() = None;
 
     let _ = api_key_entry.delete_credential();
     let _ = api_secret_entry.delete_credential();
