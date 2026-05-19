@@ -565,7 +565,8 @@ async fn save_settings(
     // Best-effort: remove this device's IP from deleted aliases on OPNsense.
     // Failures are logged but do not fail the save — gateway is already removed from settings.
     if !removed_aliases.is_empty() {
-        if let Some((api_key, api_secret)) = state.credentials.read_safe().clone() {
+        let saved_creds = state.credentials.read_safe().clone();
+        if let Some((api_key, api_secret)) = saved_creds {
             let auth = auth_header(&api_key, &api_secret);
             let base_url = old_settings.base_url.clone();
             match get_local_ip() {
