@@ -111,13 +111,21 @@ struct VpnGateway {
 struct Settings {
     base_url: String,
     gateways: Vec<VpnGateway>,
+    #[serde(default = "default_verify_tls")]
+    verify_tls: bool,
+    #[serde(default)]
+    interface_ip: String,
 }
+
+fn default_verify_tls() -> bool { false }
 
 impl Default for Settings {
     fn default() -> Self {
         Settings {
             base_url: "https://10.0.0.1:444".to_string(),
             gateways: Vec::new(),
+            verify_tls: false,
+            interface_ip: String::new(),
         }
     }
 }
@@ -156,7 +164,8 @@ struct GatewayStatusResponse {
 
 struct AppState {
     settings: RwLock<Settings>,
-    client: reqwest::Client,
+    client: reqwest::Client,            // TLS verification disabled (default, self-signed compat)
+    client_verified: reqwest::Client,   // TLS verification enabled
     /// Cached credentials loaded from OS keyring at startup.
     /// Updated on save_credentials / cleared on delete_credentials.
     /// Avoids hitting the keyring on every API call (important on Linux).
@@ -167,13 +176,19 @@ struct AppState {
     toggle_lock: tokio::sync::Mutex<()>,
 }
 
-fn make_client() -> reqwest::Client {
-    // danger_accept_invalid_certs: OPNsense commonly uses self-signed TLS certs.
+fn make_unverified_client() -> reqwest::Client {
     reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .build()
-        .expect("Failed to build HTTP client")
+        .expect("Failed to build unverified HTTP client")
+}
+
+fn make_verified_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        .build()
+        .expect("Failed to build verified HTTP client")
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -202,7 +217,35 @@ fn auth_header(api_key: &str, api_secret: &str) -> String {
     )
 }
 
-fn get_local_ip() -> Result<String, String> {
+fn host_from_url(url: &str) -> Option<String> {
+    let stripped = url.trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let host_port = stripped.split('/').next().unwrap_or("");
+    let host = if host_port.starts_with('[') {
+        // IPv6 literal: [::1]:444 — extract between brackets
+        host_port.find(']').map(|i| &host_port[1..i]).unwrap_or("").trim()
+    } else {
+        host_port.split(':').next().unwrap_or("").trim()
+    };
+    if host.is_empty() { None } else { Some(host.to_string()) }
+}
+
+fn get_local_ip_for(settings: &Settings) -> Result<String, String> {
+    let override_ip = settings.interface_ip.trim();
+    if !override_ip.is_empty() {
+        return Ok(override_ip.to_string());
+    }
+    if let Some(host) = host_from_url(&settings.base_url) {
+        let probe = format!("{}:80", host);
+        if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+            if socket.connect(probe.as_str()).is_ok() {
+                if let Ok(local_addr) = socket.local_addr() {
+                    return Ok(local_addr.ip().to_string());
+                }
+            }
+        }
+    }
     local_ip()
         .map(|ip| ip.to_string())
         .map_err(|e| format!("Failed to detect local IP: {}", e))
@@ -210,6 +253,10 @@ fn get_local_ip() -> Result<String, String> {
 
 fn normalize_url(url: &str) -> String {
     url.trim().trim_end_matches('/').to_string()
+}
+
+fn pick_client<'a>(state: &'a AppState, settings: &Settings) -> &'a reqwest::Client {
+    if settings.verify_tls { &state.client_verified } else { &state.client }
 }
 
 fn load_settings_from_store(app: &AppHandle) -> Settings {
@@ -569,13 +616,14 @@ async fn save_settings(
         if let Some((api_key, api_secret)) = saved_creds {
             let auth = auth_header(&api_key, &api_secret);
             let base_url = old_settings.base_url.clone();
-            match get_local_ip() {
+            let cleanup_client = pick_client(&*state, &old_settings);
+            match get_local_ip_for(&old_settings) {
                 Ok(local_ip) => {
                     let delete_futures = removed_aliases.iter().map(|alias_name| {
                         let url = format!("{}/api/firewall/alias_util/delete/{}", base_url, alias_name);
                         let mut body = HashMap::new();
                         body.insert("address", local_ip.clone());
-                        state.client
+                        cleanup_client
                             .post(&url)
                             .header("Authorization", auth.clone())
                             .json(&body)
@@ -597,7 +645,7 @@ async fn save_settings(
                         }
                     }
                     if any_delete_succeeded {
-                        if let Err(e) = call_reconfigure(&base_url, &auth, &state.client).await {
+                        if let Err(e) = call_reconfigure(&base_url, &auth, cleanup_client).await {
                             write_log(&format!(
                                 "save_settings: reconfigure failed after alias cleanup: {}",
                                 e
@@ -635,7 +683,7 @@ async fn toggle_vpn(
         .clone()
         .ok_or_else(|| "API credentials not configured".to_string())?;
 
-    let local_ip = get_local_ip()?;
+    let local_ip = get_local_ip_for(&settings)?;
     let auth = auth_header(&api_key, &api_secret);
     let endpoint = if enable { "add" } else { "delete" };
     let url = format!("{}/api/firewall/alias_util/{}/{}", settings.base_url, endpoint, &alias_name);
@@ -643,7 +691,8 @@ async fn toggle_vpn(
     let mut body = HashMap::new();
     body.insert("address", local_ip.as_str());
 
-    let response = state.client
+    let client = pick_client(&*state, &settings);
+    let response = client
         .post(&url)
         .header("Authorization", auth.clone())
         .json(&body)
@@ -660,7 +709,7 @@ async fn toggle_vpn(
     }
 
     // Apply firewall changes
-    call_reconfigure(&settings.base_url, &auth, &state.client).await?;
+    call_reconfigure(&settings.base_url, &auth, client).await?;
 
     // Update alias state cache and compute accurate aggregate for tray icon.
     // This prevents a false red icon when disabling one gateway while another is still active.
@@ -677,7 +726,7 @@ async fn toggle_vpn(
 #[tauri::command]
 async fn get_all_vpn_status(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<VpnStatus>, String> {
     let settings = lock_settings(&state);
-    let client = &state.client;
+    let client = pick_client(&*state, &settings);
 
     let (api_key, api_secret) = state.credentials
         .read_safe()
@@ -685,7 +734,7 @@ async fn get_all_vpn_status(app: AppHandle, state: State<'_, AppState>) -> Resul
         .ok_or_else(|| "API credentials not configured".to_string())?;
 
     // Resolve local IP once — reused for all alias checks this cycle.
-    let local_ip = get_local_ip()?;
+    let local_ip = get_local_ip_for(&settings)?;
 
     // Fetch gateway status list once (1 HTTP request)
     let gateway_status_list = fetch_all_gateway_statuses(&settings, &api_key, &api_secret, client).await;
@@ -748,6 +797,36 @@ async fn get_window_visible(app: AppHandle) -> bool {
         .unwrap_or(true)
 }
 
+#[tauri::command]
+async fn test_connection(state: State<'_, AppState>) -> Result<String, String> {
+    let settings = lock_settings(&state);
+    if settings.base_url.is_empty() {
+        return Err("Base URL is not configured".to_string());
+    }
+    let saved_creds = state.credentials.read_safe().clone();
+    let (api_key, api_secret) = saved_creds
+        .ok_or_else(|| "No credentials configured".to_string())?;
+    let client = pick_client(&*state, &settings);
+    let url = format!("{}/api/routes/gateway/status", settings.base_url);
+    let response = client
+        .get(&url)
+        .header("Authorization", auth_header(&api_key, &api_secret))
+        .send()
+        .await
+        .map_err(|e| {
+            if e.is_timeout() { "Connection timed out".to_string() }
+            else { format!("Connection failed: {}", e) }
+        })?;
+    let status = response.status();
+    if status.is_success() {
+        Ok(format!("Connected (HTTP {})", status))
+    } else if status.as_u16() == 401 {
+        Err("Authentication failed — check API key and secret".to_string())
+    } else {
+        Err(format!("Connection failed: HTTP {}", status))
+    }
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -775,7 +854,8 @@ fn main() {
             }
             app.manage(AppState {
                 settings: RwLock::new(settings.clone()),
-                client: make_client(),
+                client: make_unverified_client(),
+                client_verified: make_verified_client(),
                 credentials: RwLock::new(cached_credentials),
                 alias_states: RwLock::new(HashMap::with_capacity(settings.gateways.len())),
                 toggle_lock: tokio::sync::Mutex::new(()),
@@ -829,12 +909,13 @@ fn main() {
                     let creds = state.credentials.read_safe().clone();
 
                     if let Some((api_key, api_secret)) = creds {
-                        if let Ok(local_ip) = get_local_ip() {
+                        if let Ok(local_ip) = get_local_ip_for(&settings) {
+                            let client = pick_client(&*state, &settings);
                             // Fetch all alias states in parallel — mirrors get_all_vpn_status behavior.
                             let alias_futures = settings.gateways.iter()
                                 .map(|gw| fetch_alias_enabled(
                                     &gw.alias_name, &local_ip, &settings,
-                                    &api_key, &api_secret, &state.client,
+                                    &api_key, &api_secret, client,
                                 ));
                             let alias_results = join_all(alias_futures).await;
                             let mut states = HashMap::with_capacity(settings.gateways.len());
@@ -903,7 +984,8 @@ fn main() {
             delete_credentials,
             toggle_vpn,
             get_all_vpn_status,
-            get_window_visible
+            get_window_visible,
+            test_connection
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

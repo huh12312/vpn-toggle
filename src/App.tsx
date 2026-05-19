@@ -13,6 +13,8 @@ export interface VpnGateway {
 export interface AppSettings {
   base_url: string;
   gateways: VpnGateway[];
+  verify_tls: boolean;
+  interface_ip: string;
 }
 
 export interface Credentials {
@@ -41,6 +43,8 @@ function App() {
       ]);
       setSettings({
         ...s,
+        verify_tls: s.verify_tls ?? false,
+        interface_ip: s.interface_ip ?? "",
         gateways: s.gateways.map(g => g.id ? g : { ...g, id: crypto.randomUUID() }),
       });
       if (creds) {

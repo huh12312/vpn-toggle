@@ -26,6 +26,11 @@ function validateSettings(data: AppSettings, creds: Credentials): string | null 
   if (!/^https?:\/\/.+/.test(data.base_url.trim())) return "Base URL must start with http:// or https://";
   if (!creds.api_key.trim()) return "API Key is required.";
   if (!creds.api_secret.trim()) return "API Secret is required.";
+  if (data.interface_ip.trim()) {
+    const parts = data.interface_ip.trim().split('.');
+    const validIpv4 = /^(\d{1,3}\.){3}\d{1,3}$/.test(data.interface_ip.trim()) && parts.every(p => parseInt(p, 10) <= 255);
+    if (!validIpv4) return "Local IP Override must be a valid IPv4 address (e.g. 192.168.1.50).";
+  }
   for (let i = 0; i < data.gateways.length; i++) {
     const g = data.gateways[i];
     if (!g.display_name.trim()) return `Gateway ${i + 1}: Display Name is required.`;
@@ -50,6 +55,8 @@ function Settings({ settings, credentials, onSave, onCancel, onClearCredentials 
   // Index of gateway pending removal confirmation; null = none
   const [pendingRemoveIndex, setPendingRemoveIndex] = useState<number | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -69,6 +76,19 @@ function Settings({ settings, credentials, onSave, onCancel, onClearCredentials 
   };
 
   const [isClearing, setIsClearing] = useState(false);
+
+  const handleTestConnection = async () => {
+    setIsTesting(true);
+    setTestResult(null);
+    try {
+      const msg = await invoke<string>("test_connection");
+      setTestResult({ ok: true, message: msg });
+    } catch (e) {
+      setTestResult({ ok: false, message: String(e) });
+    } finally {
+      setIsTesting(false);
+    }
+  };
 
   const handleClearCredentials = async () => {
     setClearError(null);
@@ -140,10 +160,48 @@ function Settings({ settings, credentials, onSave, onCancel, onClearCredentials 
             <input
               type="text"
               value={formData.base_url}
-              onChange={(e) => setFormData({ ...formData, base_url: e.target.value })}
+              onChange={(e) => { setFormData({ ...formData, base_url: e.target.value }); setTestResult(null); }}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               placeholder="https://10.0.0.1:444"
             />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Local IP Override <span className="text-gray-400 font-normal">(optional)</span>
+            </label>
+            <input
+              type="text"
+              value={formData.interface_ip}
+              onChange={(e) => { setFormData({ ...formData, interface_ip: e.target.value }); setTestResult(null); }}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="e.g. 192.168.1.50 — leave blank to auto-detect"
+            />
+            <p className="text-xs text-gray-400 mt-1">
+              Override the IP added to OPNsense aliases. Use when auto-detection picks the wrong interface (e.g. Docker, WSL, or multiple NICs).
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handleTestConnection}
+              disabled={isTesting}
+              className={`text-sm px-4 py-2 rounded transition-colors ${
+                isTesting
+                  ? "bg-gray-300 text-gray-500 cursor-not-allowed"
+                  : "bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-300"
+              }`}
+            >
+              {isTesting ? "Testing..." : "Test Connection"}
+            </button>
+            {testResult ? (
+              <span className={`text-xs ${testResult.ok ? "text-green-600" : "text-red-600"}`}>
+                {testResult.message}
+              </span>
+            ) : (
+              <span className="text-xs text-gray-400">Tests currently saved settings</span>
+            )}
           </div>
 
           <div className="flex justify-between items-center">
@@ -168,7 +226,7 @@ function Settings({ settings, credentials, onSave, onCancel, onClearCredentials 
             <input
               type={showCredentials ? "text" : "password"}
               value={formCredentials.api_key}
-              onChange={(e) => setFormCredentials({ ...formCredentials, api_key: e.target.value })}
+              onChange={(e) => { setFormCredentials({ ...formCredentials, api_key: e.target.value }); setTestResult(null); }}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               placeholder="Your OPNsense API Key"
             />
@@ -181,10 +239,38 @@ function Settings({ settings, credentials, onSave, onCancel, onClearCredentials 
             <input
               type={showCredentials ? "text" : "password"}
               value={formCredentials.api_secret}
-              onChange={(e) => setFormCredentials({ ...formCredentials, api_secret: e.target.value })}
+              onChange={(e) => { setFormCredentials({ ...formCredentials, api_secret: e.target.value }); setTestResult(null); }}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               placeholder="Your OPNsense API Secret"
             />
+          </div>
+
+          <div className="pt-2 border-t border-gray-100">
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-sm font-medium text-gray-700">Verify TLS Certificate</span>
+                <p className="text-xs text-gray-400 mt-0.5">Disable only if OPNsense uses a self-signed cert</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setFormData({ ...formData, verify_tls: !formData.verify_tls }); setTestResult(null); }}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                  formData.verify_tls ? "bg-blue-600" : "bg-gray-300"
+                }`}
+                aria-label="Toggle TLS certificate verification"
+                role="switch"
+                aria-checked={formData.verify_tls}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  formData.verify_tls ? "translate-x-6" : "translate-x-1"
+                }`} />
+              </button>
+            </div>
+            {!formData.verify_tls && (
+              <div className="mt-2 bg-yellow-50 border border-yellow-300 text-yellow-800 rounded p-2 text-xs">
+                TLS verification is disabled — only use on a trusted network. Your API credentials are sent over an unverified connection.
+              </div>
+            )}
           </div>
 
           {/* Clear credentials — inline confirm, no native dialog */}
