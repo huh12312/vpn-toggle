@@ -103,6 +103,8 @@ struct VpnGateway {
     gateway_name: String, // OPNsense gateway name for status checks (e.g. WAN_VPN)
     #[serde(default)]
     alias_name: String,   // Firewall alias name for toggle — serde(default) handles schema upgrades
+    #[serde(default)]
+    id: String,           // Stable client-side ID for React key — not used by backend logic
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -357,6 +359,34 @@ fn lookup_gateway_info(
     Err(msg)
 }
 
+// ── OPNsense alias reconfigure helper ────────────────────────────────────────
+
+/// POST /api/firewall/alias/reconfigure — applies pending alias changes to the running ruleset.
+/// OPNsense requires Content-Length to be set explicitly (returns 411 otherwise).
+async fn call_reconfigure(
+    base_url: &str,
+    auth: &str,
+    client: &reqwest::Client,
+) -> Result<(), String> {
+    let url = format!("{}/api/firewall/alias/reconfigure", base_url);
+    let response = client
+        .post(&url)
+        .header("Authorization", auth)
+        .header("Content-Length", "0")
+        .body("")
+        .send()
+        .await
+        .map_err(|e| {
+            if e.is_timeout() { "Alias updated but reconfigure timed out — changes may not be applied yet".to_string() }
+            else { format!("Reconfigure request failed: {}", e) }
+        })?;
+    if !response.status().is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("Failed to reconfigure firewall: {}", text));
+    }
+    Ok(())
+}
+
 // ── Tauri commands ────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -456,14 +486,88 @@ async fn save_settings(
         base_url: normalize_url(&settings.base_url),
         ..settings
     };
+
+    // Identify aliases being removed so we can clean up OPNsense and alias_states.
+    let old_settings = lock_settings(&state);
+    let new_alias_set: std::collections::HashSet<&str> = normalized.gateways.iter()
+        .map(|g| g.alias_name.as_str())
+        .collect();
+    let removed_aliases: Vec<String> = old_settings.gateways.iter()
+        .filter(|g| !new_alias_set.contains(g.alias_name.as_str()) && !g.alias_name.is_empty())
+        .map(|g| g.alias_name.clone())
+        .collect();
+
     // Persist to disk on a blocking thread — store.save() is synchronous I/O
     let app_clone = app.clone();
     let to_save = normalized.clone();
     tokio::task::spawn_blocking(move || persist_settings(&app_clone, &to_save))
         .await
         .map_err(|e| format!("Settings save task panicked: {}", e))??;
+
     // Update in-memory state only after successful persist
-    *state.settings.write_safe() = normalized;
+    *state.settings.write_safe() = normalized.clone();
+
+    // Prune alias_states for removed gateways and sync tray icon
+    {
+        let mut states = state.alias_states.write_safe();
+        states.retain(|k, _| normalized.gateways.iter().any(|g| g.alias_name == *k));
+        let any_enabled = states.values().any(|&v| v);
+        drop(states);
+        update_tray_icon(&app, any_enabled);
+    }
+
+    // Best-effort: remove this device's IP from deleted aliases on OPNsense.
+    // Failures are logged but do not fail the save — gateway is already removed from settings.
+    if !removed_aliases.is_empty() {
+        if let Some((api_key, api_secret)) = state.credentials.read_safe().clone() {
+            let auth = auth_header(&api_key, &api_secret);
+            let base_url = old_settings.base_url.clone();
+            match get_local_ip() {
+                Ok(local_ip) => {
+                    let delete_futures = removed_aliases.iter().map(|alias_name| {
+                        let url = format!("{}/api/firewall/alias_util/delete/{}", base_url, alias_name);
+                        let mut body = HashMap::new();
+                        body.insert("address", local_ip.clone());
+                        state.client
+                            .post(&url)
+                            .header("Authorization", auth.clone())
+                            .json(&body)
+                            .send()
+                    });
+                    let delete_results = join_all(delete_futures).await;
+                    let mut any_delete_succeeded = false;
+                    for (alias_name, result) in removed_aliases.iter().zip(delete_results) {
+                        match result {
+                            Ok(resp) if resp.status().is_success() => any_delete_succeeded = true,
+                            Ok(resp) => write_log(&format!(
+                                "save_settings: alias_util/delete failed for '{}': HTTP {}",
+                                alias_name, resp.status()
+                            )),
+                            Err(e) => write_log(&format!(
+                                "save_settings: alias_util/delete request error for '{}': {}",
+                                alias_name, e
+                            )),
+                        }
+                    }
+                    if any_delete_succeeded {
+                        if let Err(e) = call_reconfigure(&base_url, &auth, &state.client).await {
+                            write_log(&format!(
+                                "save_settings: reconfigure failed after alias cleanup: {}",
+                                e
+                            ));
+                        }
+                    }
+                }
+                Err(e) => write_log(&format!(
+                    "save_settings: alias cleanup skipped — could not detect local IP: {}",
+                    e
+                )),
+            }
+        } else {
+            write_log("save_settings: alias cleanup skipped — no credentials configured");
+        }
+    }
+
     Ok(())
 }
 
@@ -506,24 +610,7 @@ async fn toggle_vpn(
     }
 
     // Apply firewall changes
-    // OPNsense requires Content-Length to be set (411 otherwise) — send empty body.
-    let reconfigure_url = format!("{}/api/firewall/alias/reconfigure", settings.base_url);
-    let reconfigure_response = state.client
-        .post(&reconfigure_url)
-        .header("Authorization", auth)
-        .header("Content-Length", "0")
-        .body("")
-        .send()
-        .await
-        .map_err(|e| {
-            if e.is_timeout() { "Alias updated but reconfigure timed out — changes may not be applied yet".to_string() }
-            else { format!("Reconfigure request failed: {}", e) }
-        })?;
-
-    if !reconfigure_response.status().is_success() {
-        let text = reconfigure_response.text().await.unwrap_or_default();
-        return Err(format!("Failed to reconfigure firewall: {}", text));
-    }
+    call_reconfigure(&settings.base_url, &auth, &state.client).await?;
 
     // Update alias state cache and compute accurate aggregate for tray icon.
     // This prevents a false red icon when disabling one gateway while another is still active.

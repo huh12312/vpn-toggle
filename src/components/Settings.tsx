@@ -16,7 +16,7 @@ const EyeIcon = ({ open }: { open: boolean }) =>
 interface SettingsProps {
   settings: AppSettings;
   credentials: Credentials;
-  onSave: (settings: AppSettings, credentials: Credentials) => void;
+  onSave: (settings: AppSettings, credentials: Credentials) => Promise<void>;
   onCancel: () => void;
   onClearCredentials: () => void;
 }
@@ -47,26 +47,38 @@ function Settings({ settings, credentials, onSave, onCancel, onClearCredentials 
   const [clearError, setClearError] = useState<string | null>(null);
   // Index of gateway pending removal confirmation; null = none
   const [pendingRemoveIndex, setPendingRemoveIndex] = useState<number | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSaving) return;
     const err = validateSettings(formData, formCredentials);
     if (err) {
       setValidationError(err);
       return;
     }
     setValidationError(null);
-    onSave(formData, formCredentials);
+    setIsSaving(true);
+    try {
+      await onSave(formData, formCredentials);
+    } finally {
+      setIsSaving(false);
+    }
   };
+
+  const [isClearing, setIsClearing] = useState(false);
 
   const handleClearCredentials = async () => {
     setClearError(null);
+    setIsClearing(true);
     try {
       await invoke("delete_credentials");
       onClearCredentials();
     } catch (e) {
       setClearError(String(e));
       setConfirmClearCredentials(false);
+    } finally {
+      setIsClearing(false);
     }
   };
 
@@ -75,7 +87,7 @@ function Settings({ settings, credentials, onSave, onCancel, onClearCredentials 
       ...formData,
       gateways: [
         ...formData.gateways,
-        { display_name: "", gateway_name: "", alias_name: "" },
+        { display_name: "", gateway_name: "", alias_name: "", id: crypto.randomUUID() },
       ],
     });
   };
@@ -191,14 +203,20 @@ function Settings({ settings, credentials, onSave, onCancel, onClearCredentials 
                 <button
                   type="button"
                   onClick={handleClearCredentials}
-                  className="bg-red-600 hover:bg-red-700 text-white text-sm px-3 py-1.5 rounded transition-colors"
+                  disabled={isClearing}
+                  className={`text-white text-sm px-3 py-1.5 rounded transition-colors ${
+                    isClearing ? "bg-red-400 cursor-not-allowed" : "bg-red-600 hover:bg-red-700"
+                  }`}
                 >
-                  Clear
+                  {isClearing ? "Clearing..." : "Clear"}
                 </button>
                 <button
                   type="button"
                   onClick={() => setConfirmClearCredentials(false)}
-                  className="bg-gray-200 hover:bg-gray-300 text-gray-800 text-sm px-3 py-1.5 rounded transition-colors"
+                  disabled={isClearing}
+                  className={`text-sm px-3 py-1.5 rounded transition-colors ${
+                    isClearing ? "bg-gray-100 text-gray-400 cursor-not-allowed" : "bg-gray-200 hover:bg-gray-300 text-gray-800"
+                  }`}
                 >
                   Cancel
                 </button>
@@ -226,7 +244,7 @@ function Settings({ settings, credentials, onSave, onCancel, onClearCredentials 
           ) : (
             <div className="space-y-4">
               {formData.gateways.map((gateway, index) => (
-                <div key={`gateway-${index}`} className="border border-gray-200 rounded-md p-4 space-y-3">
+                <div key={gateway.id || `gateway-${index}`} className="border border-gray-200 rounded-md p-4 space-y-3">
                   <div className="flex justify-between items-center mb-2">
                     <span className="text-sm font-medium text-gray-600">Gateway {index + 1}</span>
                     {pendingRemoveIndex === index ? (
@@ -307,14 +325,24 @@ function Settings({ settings, credentials, onSave, onCancel, onClearCredentials 
         <div className="flex space-x-3">
           <button
             type="submit"
-            className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-lg transition-colors"
+            disabled={isSaving}
+            className={`flex-1 font-semibold py-3 rounded-lg transition-colors ${
+              isSaving
+                ? "bg-blue-400 text-white cursor-not-allowed"
+                : "bg-blue-600 hover:bg-blue-700 text-white"
+            }`}
           >
-            Save Settings
+            {isSaving ? "Saving..." : "Save Settings"}
           </button>
           <button
             type="button"
             onClick={onCancel}
-            className="flex-1 bg-gray-300 hover:bg-gray-400 text-gray-800 font-semibold py-3 rounded-lg transition-colors"
+            disabled={isSaving}
+            className={`flex-1 font-semibold py-3 rounded-lg transition-colors ${
+              isSaving
+                ? "bg-gray-200 text-gray-400 cursor-not-allowed"
+                : "bg-gray-300 hover:bg-gray-400 text-gray-800"
+            }`}
           >
             Cancel
           </button>

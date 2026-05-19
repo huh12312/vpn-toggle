@@ -4,6 +4,7 @@ import VpnList from "./components/VpnList";
 import Settings from "./components/Settings";
 
 export interface VpnGateway {
+  id?: string;
   display_name: string;
   gateway_name: string;
   alias_name: string;
@@ -38,7 +39,10 @@ function App() {
         invoke<AppSettings>("get_settings"),
         invoke<[string, string] | null>("load_credentials"),
       ]);
-      setSettings(s);
+      setSettings({
+        ...s,
+        gateways: s.gateways.map(g => g.id ? g : { ...g, id: crypto.randomUUID() }),
+      });
       if (creds) {
         setCredentials({ api_key: creds[0], api_secret: creds[1] });
       } else {
@@ -116,6 +120,7 @@ function App() {
       <main className="flex-1 overflow-auto">
         {showSettings ? (
           <Settings
+            key={credentials === null ? 'no-creds' : 'with-creds'}
             settings={settings}
             credentials={credentials ?? { api_key: "", api_secret: "" }}
             onSave={handleSaveSettings}

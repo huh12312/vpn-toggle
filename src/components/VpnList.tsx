@@ -27,6 +27,7 @@ function VpnList({ settings }: VpnListProps) {
   const [toggling, setToggling] = useState<string | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const fetchingRef = useRef(false);
 
   const refreshStatuses = useCallback(async () => {
     if (settings.gateways.length === 0) {
@@ -34,6 +35,8 @@ function VpnList({ settings }: VpnListProps) {
       setFetchError(null);
       return;
     }
+    if (fetchingRef.current) return;
+    fetchingRef.current = true;
 
     setLoading(true);
     try {
@@ -44,6 +47,7 @@ function VpnList({ settings }: VpnListProps) {
       setFetchError(String(error));
     } finally {
       setLoading(false);
+      fetchingRef.current = false;
     }
   }, [settings]);
 
