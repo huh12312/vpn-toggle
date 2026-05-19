@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { AppSettings } from "../App";
 
 interface VpnStatus {
@@ -54,8 +55,32 @@ function VpnList({ settings }: VpnListProps) {
   useEffect(() => { refreshStatuses(); }, [refreshStatuses]);
 
   useEffect(() => {
-    intervalRef.current = setInterval(refreshStatuses, AUTO_REFRESH_MS);
+    // Only start interval if window is currently visible — prevents polling while hidden in tray.
+    // The window-visibility listener handles start/stop on subsequent show/hide transitions.
+    invoke<boolean>("get_window_visible").then(visible => {
+      if (visible && !intervalRef.current) {
+        intervalRef.current = setInterval(refreshStatuses, AUTO_REFRESH_MS);
+      }
+    });
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+  }, [refreshStatuses]);
+
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    listen<boolean>("window-visibility", ({ payload: visible }) => {
+      if (visible) {
+        refreshStatuses();
+        if (!intervalRef.current) {
+          intervalRef.current = setInterval(refreshStatuses, AUTO_REFRESH_MS);
+        }
+      } else {
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+        }
+      }
+    }).then(fn => { unlisten = fn; });
+    return () => { unlisten?.(); };
   }, [refreshStatuses]);
 
   const handleToggle = async (aliasName: string, currentState: boolean) => {

@@ -4,7 +4,14 @@
   "description": "Default capabilities for VPN Toggle — grants the main window access to core APIs and custom Tauri commands",
   "windows": ["main"],
   "permissions": [
-    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-is-minimized",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:event:allow-emit",
+    "core:webview:allow-set-webview-zoom",
     "store:default"
   ]
 }

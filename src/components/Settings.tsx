@@ -31,6 +31,8 @@ function validateSettings(data: AppSettings, creds: Credentials): string | null 
     if (!g.display_name.trim()) return `Gateway ${i + 1}: Display Name is required.`;
     if (!g.gateway_name.trim()) return `Gateway ${i + 1}: Gateway Name is required.`;
     if (!g.alias_name.trim()) return `Gateway ${i + 1}: Alias Name is required.`;
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,31}$/.test(g.alias_name.trim()))
+      return `Gateway ${i + 1}: Alias Name must start with a letter or underscore, contain only letters, numbers, and underscores, and be at most 32 characters.`;
   }
   const aliasNames = data.gateways.map((g) => g.alias_name.trim());
   const unique = new Set(aliasNames);

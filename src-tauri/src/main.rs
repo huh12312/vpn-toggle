@@ -164,6 +164,7 @@ struct AppState {
     /// Last known enabled state per alias — used for accurate aggregate tray icon
     /// when a single gateway is toggled.
     alias_states: RwLock<HashMap<String, bool>>,
+    toggle_lock: tokio::sync::Mutex<()>,
 }
 
 fn make_client() -> reqwest::Client {
@@ -380,9 +381,20 @@ async fn call_reconfigure(
             if e.is_timeout() { "Alias updated but reconfigure timed out — changes may not be applied yet".to_string() }
             else { format!("Reconfigure request failed: {}", e) }
         })?;
-    if !response.status().is_success() {
-        let text = response.text().await.unwrap_or_default();
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
         return Err(format!("Failed to reconfigure firewall: {}", text));
+    }
+    // OPNsense may return 200 with {"status":"failed"} for application-level errors
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+        if json.get("status").and_then(|v| v.as_str()) == Some("failed") {
+            let detail = json.get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error")
+                .to_string();
+            return Err(format!("Firewall reconfigure failed: {}", detail));
+        }
     }
     Ok(())
 }
@@ -456,18 +468,37 @@ async fn load_credentials(state: State<'_, AppState>) -> Result<Option<(String, 
 
 #[tauri::command]
 async fn delete_credentials(state: State<'_, AppState>) -> Result<(), String> {
-    // Create entries before clearing cache — if Entry::new fails we return early
-    // without having already wiped the in-memory credentials.
     let api_key_entry = Entry::new("vpn-toggle", "api_key")
         .map_err(|e| format!("Failed to create keyring entry for api_key: {}", e))?;
     let api_secret_entry = Entry::new("vpn-toggle", "api_secret")
         .map_err(|e| format!("Failed to create keyring entry for api_secret: {}", e))?;
 
-    // Clear in-memory cache only after we know we can proceed with keyring ops.
-    *state.credentials.write_safe() = None;
+    // Attempt keyring deletions before clearing in-memory cache.
+    let key_result = api_key_entry.delete_credential();
+    let secret_result = api_secret_entry.delete_credential();
 
-    let _ = api_key_entry.delete_credential();
-    let _ = api_secret_entry.delete_credential();
+    let mut errors: Vec<String> = Vec::new();
+    if let Err(e) = &key_result {
+        if !matches!(e, keyring::Error::NoEntry) {
+            errors.push(format!("api_key: {}", e));
+            write_log(&format!("delete_credentials: failed to delete api_key from keyring: {}", e));
+        }
+    }
+    if let Err(e) = &secret_result {
+        if !matches!(e, keyring::Error::NoEntry) {
+            errors.push(format!("api_secret: {}", e));
+            write_log(&format!("delete_credentials: failed to delete api_secret from keyring: {}", e));
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(format!(
+            "Failed to delete credentials from keyring: {}. Credentials may still exist on this device.",
+            errors.join("; ")
+        ));
+    }
+
+    *state.credentials.write_safe() = None;
     Ok(())
 }
 
@@ -486,6 +517,21 @@ async fn save_settings(
         base_url: normalize_url(&settings.base_url),
         ..settings
     };
+
+    // Validate alias names server-side (defense in depth against direct IPC calls).
+    for gw in &normalized.gateways {
+        if !gw.alias_name.is_empty() {
+            let valid = gw.alias_name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                && gw.alias_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && gw.alias_name.len() <= 32;
+            if !valid {
+                return Err(format!(
+                    "Invalid alias name '{}': must start with a letter or underscore, contain only letters, numbers, and underscores, and be at most 32 characters.",
+                    gw.alias_name
+                ));
+            }
+        }
+    }
 
     // Identify aliases being removed so we can clean up OPNsense and alias_states.
     let old_settings = lock_settings(&state);
@@ -579,6 +625,9 @@ async fn toggle_vpn(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let settings = lock_settings(&state);
+
+    let _toggle_guard = state.toggle_lock.try_lock()
+        .map_err(|_| "A toggle is already in progress — please wait and try again".to_string())?;
 
     let (api_key, api_secret) = state.credentials
         .read_safe()
@@ -691,6 +740,13 @@ async fn get_all_vpn_status(app: AppHandle, state: State<'_, AppState>) -> Resul
     Ok(statuses)
 }
 
+#[tauri::command]
+async fn get_window_visible(app: AppHandle) -> bool {
+    app.get_webview_window("main")
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(true)
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -704,6 +760,7 @@ fn main() {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.set_focus();
+                let _ = window.emit("window-visibility", true);
             }
         }))
         .setup(|app| {
@@ -720,6 +777,7 @@ fn main() {
                 client: make_client(),
                 credentials: RwLock::new(cached_credentials),
                 alias_states: RwLock::new(HashMap::with_capacity(settings.gateways.len())),
+                toggle_lock: tokio::sync::Mutex::new(()),
             });
 
             let show_item = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
@@ -735,6 +793,7 @@ fn main() {
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.show();
                             let _ = window.set_focus();
+                            let _ = window.emit("window-visibility", true);
                         }
                     }
                     "quit" => {
@@ -751,6 +810,7 @@ fn main() {
                         if let Some(window) = tray.app_handle().get_webview_window("main") {
                             let _ = window.show();
                             let _ = window.set_focus();
+                            let _ = window.emit("window-visibility", true);
                         }
                     }
                 })
@@ -818,11 +878,13 @@ fn main() {
                         tauri::WindowEvent::Resized(size) => {
                             if size.width == 0 && size.height == 0 {
                                 let _ = window_clone.hide();
+                                let _ = window_clone.emit("window-visibility", false);
                             }
                         }
                         tauri::WindowEvent::CloseRequested { api, .. } => {
                             api.prevent_close();
                             let _ = window_clone.hide();
+                            let _ = window_clone.emit("window-visibility", false);
                         }
                         _ => {}
                     }
@@ -839,10 +901,12 @@ fn main() {
             load_credentials,
             delete_credentials,
             toggle_vpn,
-            get_all_vpn_status
+            get_all_vpn_status,
+            get_window_visible
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {
             write_log(&format!("[FATAL] Tauri runtime error: {}", e));
+            std::process::exit(1);
         });
 }
