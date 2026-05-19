@@ -1,6 +1,6 @@
 {
   "productName": "VPN Toggle",
-  "version": "1.1.21",
+  "version": "1.1.22",
   "identifier": "com.vpntoggle.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
